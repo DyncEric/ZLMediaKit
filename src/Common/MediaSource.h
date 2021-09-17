@@ -61,12 +61,16 @@ public:
     // 获取媒体源类型
     virtual MediaOriginType getOriginType(MediaSource &sender) const { return MediaOriginType::unknown; }
     // 获取媒体源url或者文件路径
-    virtual string getOriginUrl(MediaSource &sender) const { return ""; }
+    virtual string getOriginUrl(MediaSource &sender) const;
     // 获取媒体源客户端相关信息
     virtual std::shared_ptr<SockInfo> getOriginSock(MediaSource &sender) const { return nullptr; }
 
     // 通知拖动进度条
     virtual bool seekTo(MediaSource &sender, uint32_t stamp) { return false; }
+    // 通知暂停或恢复
+    virtual bool pause(MediaSource &sender, bool pause) { return false; }
+    // 通知倍数
+    virtual bool speed(MediaSource &sender, float speed) { return false; }
     // 通知其停止产生流
     virtual bool close(MediaSource &sender, bool force) { return false; }
     // 获取观看总人数
@@ -106,6 +110,8 @@ public:
     std::shared_ptr<SockInfo> getOriginSock(MediaSource &sender) const override;
 
     bool seekTo(MediaSource &sender, uint32_t stamp) override;
+    bool pause(MediaSource &sender,  bool pause) override;
+    bool speed(MediaSource &sender, float speed) override;
     bool close(MediaSource &sender, bool force) override;
     int totalReaderCount(MediaSource &sender) override;
     void onReaderChanged(MediaSource &sender, int size) override;
@@ -192,7 +198,7 @@ private:
  */
 class MediaSource: public TrackSource, public enable_shared_from_this<MediaSource> {
 public:
-    static constexpr MediaSource *NullMediaSource = nullptr;
+    static MediaSource * const NullMediaSource;
     using Ptr = std::shared_ptr<MediaSource>;
     using StreamMap = unordered_map<string, weak_ptr<MediaSource> >;
     using AppStreamMap = unordered_map<string, StreamMap>;
@@ -249,6 +255,10 @@ public:
 
     // 拖动进度条
     bool seekTo(uint32_t stamp);
+    //暂停
+    bool pause(bool pause);
+    //倍数播放
+    bool speed(float speed);
     // 关闭该流
     bool close(bool force);
     // 该流观看人数变化
@@ -332,7 +342,8 @@ public:
     virtual ~PacketCache() = default;
 
     void inputPacket(uint64_t stamp, bool is_video, std::shared_ptr<packet> pkt, bool key_pos) {
-        if (_policy.isFlushAble(is_video, key_pos, stamp, _cache->size())) {
+        bool flush = flushImmediatelyWhenCloseMerge();
+        if (!flush && _policy.isFlushAble(is_video, key_pos, stamp, _cache->size())) {
             flushAll();
         }
 
@@ -340,6 +351,10 @@ public:
         _cache->emplace_back(std::move(pkt));
         if (key_pos) {
             _key_pos = key_pos;
+        }
+
+        if (flush) {
+            flushAll();
         }
     }
 
@@ -357,6 +372,12 @@ private:
         onFlush(std::move(_cache), _key_pos);
         _cache = std::make_shared<packet_list>();
         _key_pos = false;
+    }
+
+    bool flushImmediatelyWhenCloseMerge() {
+        //一般的协议关闭合并写时，立即刷新缓存，这样可以减少一帧的延时，但是rtp例外，请看相应的模板特例化函数
+        GET_CONFIG(int, mergeWriteMS, General::kMergeWriteMS);
+        return mergeWriteMS <= 0;
     }
 
 private:

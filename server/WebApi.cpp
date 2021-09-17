@@ -90,7 +90,7 @@ static HttpApi toApi(const function<void(API_ARGS_MAP_ASYNC)> &cb) {
 
         //参数解析成map
         auto args = getAllArgs(parser);
-        cb(sender, parser.getHeader(), headerOut, args, val, invoker);
+        cb(sender, headerOut, HttpAllArgs<decltype(args)>(parser, args), val, invoker);
     };
 }
 
@@ -107,18 +107,18 @@ static HttpApi toApi(const function<void(API_ARGS_JSON_ASYNC)> &cb) {
         HttpSession::KeyValue headerOut;
         headerOut["Content-Type"] = string("application/json; charset=") + charSet;
 
-        Json::Value out;
-        out["code"] = API::Success;
+        Json::Value val;
+        val["code"] = API::Success;
 
         if (parser["Content-Type"].find("application/json") == string::npos) {
             throw InvalidArgsException("该接口只支持json格式的请求");
         }
         //参数解析成json对象然后处理
-        Json::Value in;
+        Json::Value args;
         Json::Reader reader;
-        reader.parse(parser.Content(), in);
+        reader.parse(parser.Content(), args);
 
-        cb(sender, parser.getHeader(), headerOut, in, out, invoker);
+        cb(sender, headerOut, HttpAllArgs<decltype(args)>(parser, args), val, invoker);
     };
 }
 
@@ -138,7 +138,7 @@ static HttpApi toApi(const function<void(API_ARGS_STRING_ASYNC)> &cb) {
         Json::Value val;
         val["code"] = API::Success;
 
-        cb(sender, parser.getHeader(), headerOut, parser, val, invoker);
+        cb(sender, headerOut, HttpAllArgs<string>(parser, (string &)parser.Content()), val, invoker);
     };
 }
 
@@ -217,10 +217,7 @@ static inline void addHttpListener(){
         consumed = true;
 
         if(api_debug){
-            auto newInvoker = [invoker, parser](int code,
-                                                const HttpSession::KeyValue &headerOut,
-                                                const HttpBody::Ptr &body) {
-
+            auto newInvoker = [invoker, parser](int code, const HttpSession::KeyValue &headerOut, const HttpBody::Ptr &body) {
                 //body默认为空
                 ssize_t size = 0;
                 if (body && body->remainSize()) {
@@ -228,18 +225,23 @@ static inline void addHttpListener(){
                     size = body->remainSize();
                 }
 
-                if (size && size < 4 * 1024) {
-                    string contentOut = body->readData(size)->toString();
-                    DebugL << "\r\n# request:\r\n" << parser.Method() << " " << parser.FullUrl() << "\r\n"
-                           << "# content:\r\n" << parser.Content() << "\r\n"
-                           << "# response:\r\n"
-                           << contentOut << "\r\n";
-                    invoker(code, headerOut, contentOut);
+                LogContextCapturer log(getLogger(), LDebug, __FILE__, "http api debug", __LINE__);
+                log << "\r\n# request:\r\n" << parser.Method() << " " << parser.FullUrl() << "\r\n";
+                log << "# header:\r\n";
+
+                for (auto &pr : parser.getHeader()) {
+                    log << pr.first << " : " << pr.second << "\r\n";
+                }
+
+                auto &content = parser.Content();
+                log << "# content:\r\n" << (content.size() > 4 * 1024 ? content.substr(0, 4 * 1024) : content) << "\r\n";
+
+                if (size > 0 && size < 4 * 1024) {
+                    auto response = body->readData(size);
+                    log << "# response:\r\n" << response->data() << "\r\n";
+                    invoker(code, headerOut, response);
                 } else {
-                    DebugL << "\r\n# request:\r\n" << parser.Method() << " " << parser.FullUrl() << "\r\n"
-                           << "# content:\r\n" << parser.Content() << "\r\n"
-                           << "# response size:"
-                           << size << "\r\n";
+                    log << "# response size:" << size << "\r\n";
                     invoker(code, headerOut, body);
                 }
             };
@@ -346,6 +348,36 @@ Value makeMediaSourceJson(MediaSource &media){
     return item;
 }
 
+Value getStatisticJson() {
+    Value val(objectValue);
+    val["MediaSource"] = (Json::UInt64)(ObjectStatistic<MediaSource>::count());
+    val["MultiMediaSourceMuxer"] = (Json::UInt64)(ObjectStatistic<MultiMediaSourceMuxer>::count());
+
+    val["TcpServer"] = (Json::UInt64)(ObjectStatistic<TcpServer>::count());
+    val["TcpSession"] = (Json::UInt64)(ObjectStatistic<TcpSession>::count());
+    val["UdpServer"] = (Json::UInt64)(ObjectStatistic<UdpServer>::count());
+    val["UdpSession"] = (Json::UInt64)(ObjectStatistic<UdpSession>::count());
+    val["TcpClient"] = (Json::UInt64)(ObjectStatistic<TcpClient>::count());
+    val["Socket"] = (Json::UInt64)(ObjectStatistic<Socket>::count());
+
+    val["FrameImp"] = (Json::UInt64)(ObjectStatistic<FrameImp>::count());
+    val["Frame"] = (Json::UInt64)(ObjectStatistic<Frame>::count());
+
+    val["Buffer"] = (Json::UInt64)(ObjectStatistic<Buffer>::count());
+    val["BufferRaw"] = (Json::UInt64)(ObjectStatistic<BufferRaw>::count());
+    val["BufferLikeString"] = (Json::UInt64)(ObjectStatistic<BufferLikeString>::count());
+    val["BufferList"] = (Json::UInt64)(ObjectStatistic<BufferList>::count());
+
+    val["RtpPacket"] = (Json::UInt64)(ObjectStatistic<RtpPacket>::count());
+    val["RtmpPacket"] = (Json::UInt64)(ObjectStatistic<RtmpPacket>::count());
+#ifdef ENABLE_MEM_DEBUG
+    auto bytes = getTotalMemUsage();
+    val["totalMemUsage"] = (Json::UInt64)bytes;
+    val["totalMemUsageMB"] = (int)(bytes / 1024 / 1024);
+#endif
+    return val;
+}
+
 /**
  * 安装api接口
  * 所有api都支持GET和POST两种方式
@@ -409,7 +441,7 @@ void installWebApi() {
         CHECK_SECRET();
         auto &ini = mINI::Instance();
         int changed = API::Success;
-        for (auto &pr : allArgs) {
+        for (auto &pr : allArgs.getArgs()) {
             if (ini.find(pr.first) == ini.end()) {
 #if 1
                 //没有这个key
@@ -561,7 +593,7 @@ void installWebApi() {
         CHECK_SECRET();
         Value jsession;
         uint16_t local_port = allArgs["local_port"].as<uint16_t>();
-        string &peer_ip = allArgs["peer_ip"];
+        string peer_ip = allArgs["peer_ip"];
 
         SessionMap::Instance().for_each_session([&](const string &id,const Session::Ptr &session){
             if(local_port != 0 && local_port != session->get_local_port()){
@@ -599,7 +631,7 @@ void installWebApi() {
     api_regist("/index/api/kick_sessions",[](API_ARGS_MAP){
         CHECK_SECRET();
         uint16_t local_port = allArgs["local_port"].as<uint16_t>();
-        string &peer_ip = allArgs["peer_ip"];
+        string peer_ip = allArgs["peer_ip"];
         size_t count_hit = 0;
 
         list<Session::Ptr> session_list;
@@ -856,7 +888,7 @@ void installWebApi() {
     //测试url http://127.0.0.1/index/api/downloadBin
     api_regist("/index/api/downloadBin",[](API_ARGS_MAP_ASYNC){
         CHECK_SECRET();
-        invoker.responseFile(headerIn,StrCaseMap(),exePath());
+        invoker.responseFile(allArgs.getParser().getHeader(),StrCaseMap(),exePath());
     });
 
 #if defined(ENABLE_RTPPROXY)
@@ -1111,7 +1143,7 @@ void installWebApi() {
 
             //截图存在，且未过期，那么返回之
             res_old_snap = true;
-            responseSnap(path, headerIn, invoker);
+            responseSnap(path, allArgs.getParser().getHeader(), invoker);
             //中断遍历
             return false;
         });
@@ -1133,7 +1165,7 @@ void installWebApi() {
 
         //启动FFmpeg进程，开始截图，生成临时文件，截图成功后替换为正式文件
         auto new_snap_tmp = new_snap + ".tmp";
-        FFmpegSnap::makeSnap(allArgs["url"], new_snap_tmp, allArgs["timeout_sec"], [invoker, headerIn, new_snap, new_snap_tmp](bool success) {
+        FFmpegSnap::makeSnap(allArgs["url"], new_snap_tmp, allArgs["timeout_sec"], [invoker, allArgs, new_snap, new_snap_tmp](bool success) {
             if (!success) {
                 //生成截图失败，可能残留空文件
                 File::delete_file(new_snap_tmp.data());
@@ -1142,46 +1174,22 @@ void installWebApi() {
                 File::delete_file(new_snap.data());
                 rename(new_snap_tmp.data(), new_snap.data());
             }
-            responseSnap(new_snap, headerIn, invoker);
+            responseSnap(new_snap, allArgs.getParser().getHeader(), invoker);
         });
     });
 
     api_regist("/index/api/getStatistic",[](API_ARGS_MAP){
         CHECK_SECRET();
-        val["data"]["MediaSource"] = (Json::UInt64)(ObjectStatistic<MediaSource>::count());
-        val["data"]["MultiMediaSourceMuxer"] = (Json::UInt64)(ObjectStatistic<MultiMediaSourceMuxer>::count());
-
-        val["data"]["TcpServer"] = (Json::UInt64)(ObjectStatistic<TcpServer>::count());
-        val["data"]["TcpSession"] = (Json::UInt64)(ObjectStatistic<TcpSession>::count());
-        val["data"]["UdpServer"] = (Json::UInt64)(ObjectStatistic<UdpServer>::count());
-        val["data"]["UdpSession"] = (Json::UInt64)(ObjectStatistic<UdpSession>::count());
-        val["data"]["TcpClient"] = (Json::UInt64)(ObjectStatistic<TcpClient>::count());
-        val["data"]["Socket"] = (Json::UInt64)(ObjectStatistic<Socket>::count());
-
-        val["data"]["FrameImp"] = (Json::UInt64)(ObjectStatistic<FrameImp>::count());
-        val["data"]["Frame"] = (Json::UInt64)(ObjectStatistic<Frame>::count());
-
-        val["data"]["Buffer"] = (Json::UInt64)(ObjectStatistic<Buffer>::count());
-        val["data"]["BufferRaw"] = (Json::UInt64)(ObjectStatistic<BufferRaw>::count());
-        val["data"]["BufferLikeString"] = (Json::UInt64)(ObjectStatistic<BufferLikeString>::count());
-        val["data"]["BufferList"] = (Json::UInt64)(ObjectStatistic<BufferList>::count());
-
-        val["data"]["RtpPacket"] = (Json::UInt64)(ObjectStatistic<RtpPacket>::count());
-        val["data"]["RtmpPacket"] = (Json::UInt64)(ObjectStatistic<RtmpPacket>::count());
-#ifdef ENABLE_MEM_DEBUG
-        auto bytes = getTotalMemUsage();
-        val["data"]["totalMemUsage"] = (Json::UInt64)bytes;
-        val["data"]["totalMemUsageMB"] = (int)(bytes / 1024 / 1024);
-#endif
+        val["data"] = getStatisticJson();
     });
 
 #ifdef ENABLE_WEBRTC
     api_regist("/index/api/webrtc",[](API_ARGS_STRING_ASYNC){
         CHECK_ARGS("app", "stream");
 
-        auto offer_sdp = allArgs.Content();
-        auto type = allArgs.getUrlArgs()["type"];
-        MediaInfo info(StrPrinter << "rtc://" << headerIn["Host"] << "/" << allArgs.getUrlArgs()["app"] << "/" << allArgs.getUrlArgs()["stream"] << "?" << allArgs.Params());
+        auto offer_sdp = allArgs.getArgs();
+        auto type = allArgs["type"];
+        MediaInfo info(StrPrinter << "rtc://" << allArgs["Host"] << "/" << allArgs["app"] << "/" << allArgs["stream"] << "?" << allArgs.getParser().Params());
 
         //设置返回类型
         headerOut["Content-Type"] = HttpFileManager::getContentType(".json");

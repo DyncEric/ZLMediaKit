@@ -22,34 +22,6 @@ namespace toolkit {
 
 namespace mediakit{
 
-template<typename C>
-std::shared_ptr<C> FrameImp::create_l() {
-#if 0
-    static ResourcePool<C> packet_pool;
-    static onceToken token([]() {
-        packet_pool.setSize(1024);
-    });
-    auto ret = packet_pool.obtain();
-    ret->_buffer.clear();
-    ret->_prefix_size = 0;
-    ret->_dts = 0;
-    ret->_pts = 0;
-    return ret;
-#else
-    return std::shared_ptr<C>(new C());
-#endif
-}
-
-#define CREATE_FRAME_IMP(C) \
-template<> \
-std::shared_ptr<C> FrameImp::create<C>() { \
-    return create_l<C>(); \
-}
-
-CREATE_FRAME_IMP(FrameImp);
-CREATE_FRAME_IMP(H264Frame);
-CREATE_FRAME_IMP(H265Frame);
-
 /**
  * 该对象的功能是把一个不可缓存的帧转换成可缓存的帧
  */
@@ -203,8 +175,8 @@ bool FrameMerger::willFlush(const Frame::Ptr &frame) const{
                 //缓存中没有有效的能解码的帧，所以这次不flush
                 return _frame_cache.size() > kMaxFrameCacheSize;
             }
-            if (_frame_cache.back()->dts() != frame->dts() || frame->decodeAble()) {
-                //时间戳变化了,或新的一帧，立即flush
+            if (_frame_cache.back()->dts() != frame->dts() || frame->decodeAble() || frame->configFrame()) {
+                //时间戳变化了,或新的一帧，或遇到config帧，立即flush
                 return true;
             }
             return _frame_cache.size() > kMaxFrameCacheSize;

@@ -25,7 +25,8 @@ namespace mediakit {
 enum PlayType {
     type_play = 0,
     type_pause,
-    type_seek
+    type_seek,
+    type_speed
 };
 
 RtspPlayer::RtspPlayer(const EventPoller::Ptr &poller) : TcpClient(poller){
@@ -414,8 +415,12 @@ void RtspPlayer::sendPause(int type , uint32_t seekMS){
     }
 }
 
-void RtspPlayer::pause(bool pause_flag) {
-    sendPause(pause_flag ? type_pause : type_seek, getProgressMilliSecond());
+void RtspPlayer::pause(bool bPause) {
+    sendPause(bPause ? type_pause : type_seek, getProgressMilliSecond());
+}
+
+void RtspPlayer::speed(float speed) {
+    sendRtspRequest("PLAY", _content_base, {"Scale", StrPrinter << speed});
 }
 
 void RtspPlayer::handleResPAUSE(const Parser& parser,int type) {
@@ -491,7 +496,7 @@ void RtspPlayer::onRtcpPacket(int track_idx, SdpTrack::Ptr &track, uint8_t *data
         if ((RtcpType) rtcp->pt == RtcpType::RTCP_SR) {
             auto sr = (RtcpSR *) (rtcp);
             //设置rtp时间戳与ntp时间戳的对应关系
-            setNtpStamp(track_idx, sr->rtpts, track->_samplerate, sr->getNtpUnixStampMS());
+            setNtpStamp(track_idx, sr->rtpts, sr->getNtpUnixStampMS());
         }
     }
 }

@@ -11,8 +11,6 @@
 #include "Common/config.h"
 #include "RtpReceiver.h"
 
-#define RTP_MAX_SIZE (10 * 1024)
-
 namespace mediakit {
 
 RtpTrack::RtpTrack() {
@@ -36,8 +34,9 @@ RtpPacket::Ptr RtpTrack::inputRtp(TrackType type, int sample_rate, uint8_t *ptr,
         WarnL << "rtp包太小:" << len;
         return nullptr;
     }
-    if (len > RTP_MAX_SIZE) {
-        WarnL << "超大的rtp包:" << len << " > " << RTP_MAX_SIZE;
+    GET_CONFIG(uint32_t, rtpMaxSize, Rtp::kRtpMaxSize);
+    if (len > 1024 * rtpMaxSize) {
+        WarnL << "超大的rtp包:" << len << " > " << 1024 * rtpMaxSize;
         return nullptr;
     }
     if (!sample_rate) {
@@ -90,15 +89,23 @@ RtpPacket::Ptr RtpTrack::inputRtp(TrackType type, int sample_rate, uint8_t *ptr,
     data[3] = len & 0xFF;
     //拷贝rtp
     memcpy(&data[4], ptr, len);
-    //设置ntp时间戳
-    rtp->ntp_stamp = _ntp_stamp.getNtpStamp(ntohl(rtp->getHeader()->stamp), sample_rate);
+    if (_disable_ntp) {
+        //不支持ntp时间戳，例如国标推流，那么直接使用rtp时间戳
+        rtp->ntp_stamp = rtp->getStamp() * uint64_t(1000) / sample_rate;
+    } else {
+        //设置ntp时间戳
+        rtp->ntp_stamp = _ntp_stamp.getNtpStamp(ntohl(rtp->getHeader()->stamp), sample_rate);
+    }
     onBeforeRtpSorted(rtp);
     sortPacket(rtp->getSeq(), rtp);
     return rtp;
 }
 
-void RtpTrack::setNtpStamp(uint32_t rtp_stamp, uint32_t sample_rate, uint64_t ntp_stamp_ms){
-    _ntp_stamp.setNtpStamp(rtp_stamp, sample_rate, ntp_stamp_ms);
+void RtpTrack::setNtpStamp(uint32_t rtp_stamp, uint64_t ntp_stamp_ms) {
+    _disable_ntp = rtp_stamp == 0 && ntp_stamp_ms == 0;
+    if (!_disable_ntp) {
+        _ntp_stamp.setNtpStamp(rtp_stamp, ntp_stamp_ms);
+    }
 }
 
 ////////////////////////////////////////////////////////////////////////////////////

@@ -40,6 +40,17 @@ string getOriginTypeString(MediaOriginType type){
     }
 }
 
+static string getOriginUrl_l(const MediaSource *thiz) {
+    if (thiz == MediaSource::NullMediaSource) {
+        return "";
+    }
+    return thiz->getSchema() + "://" + thiz->getVhost() + "/" + thiz->getApp() + "/" + thiz->getId();
+}
+
+//////////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+MediaSource * const MediaSource::NullMediaSource = nullptr;
+
 MediaSource::MediaSource(const string &schema, const string &vhost, const string &app, const string &stream_id){
     GET_CONFIG(bool, enableVhost, General::kEnableVhost);
     if (!enableVhost) {
@@ -136,9 +147,13 @@ MediaOriginType MediaSource::getOriginType() const {
 string MediaSource::getOriginUrl() const {
     auto listener = _listener.lock();
     if (!listener) {
-        return "";
+        return getOriginUrl_l(this);
     }
-    return listener->getOriginUrl(const_cast<MediaSource &>(*this));
+    auto ret = listener->getOriginUrl(const_cast<MediaSource &>(*this));
+    if (!ret.empty()) {
+        return ret;
+    }
+    return getOriginUrl_l(this);
 }
 
 std::shared_ptr<SockInfo> MediaSource::getOriginSock() const {
@@ -155,6 +170,22 @@ bool MediaSource::seekTo(uint32_t stamp) {
         return false;
     }
     return listener->seekTo(*this, stamp);
+}
+
+bool MediaSource::pause(bool pause) {
+    auto listener = _listener.lock();
+    if (!listener) {
+        return false;
+    }
+    return listener->pause(*this, pause);
+}
+
+bool MediaSource::speed(float speed) {
+    auto listener = _listener.lock();
+    if (!listener) {
+        return false;
+    }
+    return listener->speed(*this, speed);
 }
 
 bool MediaSource::close(bool force) {
@@ -537,11 +568,6 @@ void MediaSourceEvent::onReaderChanged(MediaSource &sender, int size){
 
         if (!is_mp4_vod) {
             //直播时触发无人观看事件，让开发者自行选择是否关闭
-            WarnL << "无人观看事件:"
-                  << strong_sender->getSchema() << "/"
-                  << strong_sender->getVhost() << "/"
-                  << strong_sender->getApp() << "/"
-                  << strong_sender->getId();
             NoticeCenter::Instance().emitEvent(Broadcast::kBroadcastStreamNoneReader, *strong_sender);
         } else {
             //这个是mp4点播，我们自动关闭
@@ -556,6 +582,10 @@ void MediaSourceEvent::onReaderChanged(MediaSource &sender, int size){
     }, nullptr);
 }
 
+string MediaSourceEvent::getOriginUrl(MediaSource &sender) const {
+    return getOriginUrl_l(&sender);
+}
+
 MediaOriginType MediaSourceEventInterceptor::getOriginType(MediaSource &sender) const {
     auto listener = _listener.lock();
     if (!listener) {
@@ -567,9 +597,13 @@ MediaOriginType MediaSourceEventInterceptor::getOriginType(MediaSource &sender) 
 string MediaSourceEventInterceptor::getOriginUrl(MediaSource &sender) const {
     auto listener = _listener.lock();
     if (!listener) {
-        return "";
+        return MediaSourceEvent::getOriginUrl(sender);
     }
-    return listener->getOriginUrl(sender);
+    auto ret = listener->getOriginUrl(sender);
+    if (!ret.empty()) {
+        return ret;
+    }
+    return MediaSourceEvent::getOriginUrl(sender);
 }
 
 std::shared_ptr<SockInfo> MediaSourceEventInterceptor::getOriginSock(MediaSource &sender) const {
@@ -586,6 +620,22 @@ bool MediaSourceEventInterceptor::seekTo(MediaSource &sender, uint32_t stamp) {
         return false;
     }
     return listener->seekTo(sender, stamp);
+}
+
+bool MediaSourceEventInterceptor::pause(MediaSource &sender, bool pause) {
+    auto listener = _listener.lock();
+    if (!listener) {
+        return false;
+    }
+    return listener->pause(sender, pause);
+}
+
+bool MediaSourceEventInterceptor::speed(MediaSource &sender, float speed) {
+    auto listener = _listener.lock();
+    if (!listener) {
+        return false;
+    }
+    return listener->speed(sender, speed);
 }
 
 bool MediaSourceEventInterceptor::close(MediaSource &sender, bool force) {
@@ -673,6 +723,14 @@ std::shared_ptr<MediaSourceEvent> MediaSourceEventInterceptor::getDelegate() con
 }
 
 /////////////////////////////////////FlushPolicy//////////////////////////////////////
+
+template<>
+bool PacketCache<RtpPacket>::flushImmediatelyWhenCloseMerge() {
+    //因为rtp的包很小，一个RtpPacket包中也不是完整的一帧图像，所以在关闭合并写时，
+    //还是有必要缓冲一帧的rtp(也就是时间戳相同的rtp)再输出，这样虽然会增加一帧的延时
+    //但是却对性能提升很大，这样做还是比较划算的
+    return false;
+}
 
 static bool isFlushAble_default(bool is_video, uint64_t last_stamp, uint64_t new_stamp, size_t cache_size) {
     if (new_stamp + 500 < last_stamp) {

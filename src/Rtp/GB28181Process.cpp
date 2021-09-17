@@ -16,6 +16,8 @@
 #include "Extension/H264Rtp.h"
 #include "Extension/Factory.h"
 #include "Extension/Opus.h"
+#include "Extension/G711.h"
+#include "Extension/H265.h"
 
 namespace mediakit{
 
@@ -27,10 +29,13 @@ static inline bool checkTS(const uint8_t *packet, size_t bytes){
 class RtpReceiverImp : public RtpTrackImp {
 public:
     using Ptr = std::shared_ptr<RtpReceiverImp>;
-    RtpReceiverImp(int sample_rate, RtpTrackImp::OnSorted cb, RtpTrackImp::BeforeSorted cb_before = nullptr){
+
+    RtpReceiverImp(int sample_rate, RtpTrackImp::OnSorted cb, RtpTrackImp::BeforeSorted cb_before = nullptr) {
         _sample_rate = sample_rate;
         setOnSorted(std::move(cb));
         setBeforeSorted(std::move(cb_before));
+        //GB28181推流不支持ntp时间戳
+        setNtpStamp(0, 0);
     }
 
     ~RtpReceiverImp() override = default;
