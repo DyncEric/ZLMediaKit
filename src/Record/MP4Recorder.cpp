@@ -16,6 +16,7 @@
 #include "MP4Recorder.h"
 #include "Thread/WorkThreadPool.h"
 
+using namespace std;
 using namespace toolkit;
 
 namespace mediakit {
@@ -30,7 +31,9 @@ MP4Recorder::MP4Recorder(const string &path, const string &vhost, const string &
     GET_CONFIG(size_t ,recordSec,Record::kFileSecond);
     _max_second = max_second ? max_second : recordSec;
 }
+
 MP4Recorder::~MP4Recorder() {
+    flush();
     closeFile();
 }
 
@@ -68,21 +71,21 @@ void MP4Recorder::asyncClose() {
     auto full_path = _full_path;
     auto info = _info;
     WorkThreadPool::Instance().getExecutor()->async([muxer, full_path_tmp, full_path, info]() mutable {
-        //获取文件录制时间，放在关闭mp4之前是为了忽略关闭mp4执行时间
-        info.time_len = (float) (::time(NULL) - info.start_time);
-        //关闭mp4非常耗时，所以要放在后台线程执行
+        info.time_len = muxer->getDuration() / 1000.0f;
+        // 关闭mp4可能非常耗时，所以要放在后台线程执行
         muxer->closeMP4();
-        //获取文件大小
-        info.file_size = File::fileSize(full_path_tmp.data());
-        if (info.file_size < 1024) {
-            //录像文件太小，删除之
-            File::delete_file(full_path_tmp.data());
-            return;
+        if (!full_path_tmp.empty()) {
+            // 获取文件大小
+            info.file_size = File::fileSize(full_path_tmp.data());
+            if (info.file_size < 1024) {
+                // 录像文件太小，删除之
+                File::delete_file(full_path_tmp.data());
+                return;
+            }
+            // 临时文件名改成正式文件名，防止mp4未完成时被访问
+            rename(full_path_tmp.data(), full_path.data());
         }
-        //临时文件名改成正式文件名，防止mp4未完成时被访问
-        rename(full_path_tmp.data(), full_path.data());
-
-        /////record 业务逻辑//////
+        //触发mp4录制切片生成事件
         NoticeCenter::Instance().emitEvent(Broadcast::kBroadcastRecordMP4, info);
     });
 }
@@ -94,20 +97,29 @@ void MP4Recorder::closeFile() {
     }
 }
 
-bool MP4Recorder::inputFrame(const Frame::Ptr &frame) {
-    if (_last_dts == 0 || _last_dts > frame->dts()) {
-        //极少情况下dts时间戳可能回退
-        _last_dts = frame->dts();
+void MP4Recorder::flush() {
+    if (_muxer) {
+        _muxer->flush();
     }
+}
 
-    auto duration = frame->dts() - _last_dts;
-    if (!_muxer || ((duration > _max_second * 1000) && (!_have_video || (_have_video && frame->keyFrame())))) {
-        //成立条件
-        //1、_muxer为空
-        //2、到了切片时间，并且只有音频
-        //3、到了切片时间，有视频并且遇到视频的关键帧
-        _last_dts = 0;
-        createFile();
+bool MP4Recorder::inputFrame(const Frame::Ptr &frame) {
+    if (!(_have_video && frame->getTrackType() == TrackAudio)) {
+        //如果有视频且输入的是音频，那么应该忽略切片逻辑
+        if (_last_dts == 0 || _last_dts > frame->dts()) {
+            //极少情况下dts时间戳可能回退
+            _last_dts = frame->dts();
+        }
+
+        auto duration = frame->dts() - _last_dts;
+        if (!_muxer || ((duration > _max_second * 1000) && (!_have_video || (_have_video && frame->keyFrame())))) {
+            //成立条件
+            // 1、_muxer为空
+            // 2、到了切片时间，并且只有音频
+            // 3、到了切片时间，有视频并且遇到视频的关键帧
+            _last_dts = 0;
+            createFile();
+        }
     }
 
     if (_muxer) {

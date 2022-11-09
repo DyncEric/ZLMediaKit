@@ -10,7 +10,11 @@
 
 #include "Rtmp/utils.h"
 #include "H264Rtmp.h"
-namespace mediakit{
+
+using namespace std;
+using namespace toolkit;
+
+namespace mediakit {
 
 H264RtmpDecoder::H264RtmpDecoder() {
     _h264frame = obtainFrame();
@@ -23,75 +27,46 @@ H264Frame::Ptr H264RtmpDecoder::obtainFrame() {
 }
 
 /**
- * 返回不带0x00 00 00 01头的sps
- * @return
+ * 返回不带0x00 00 00 01头的sps pps
  */
-static string getH264SPS(const RtmpPacket &thiz) {
-    string ret;
+static bool getH264Config(const RtmpPacket &thiz, string &sps, string &pps) {
     if (thiz.getMediaType() != FLV_CODEC_H264) {
-        return ret;
+        return false;
     }
     if (!thiz.isCfgFrame()) {
-        return ret;
+        return false;
     }
     if (thiz.buffer.size() < 13) {
-        WarnL << "bad H264 cfg!";
-        return ret;
+        return false;
     }
-    uint16_t sps_size ;
-    memcpy(&sps_size, thiz.buffer.data() + 11, 2);
-    sps_size = ntohs(sps_size);
-    if ((int) thiz.buffer.size() < 13 + sps_size) {
-        WarnL << "bad H264 cfg!";
-        return ret;
-    }
-    ret.assign(thiz.buffer.data() + 13, sps_size);
-    return ret;
-}
-
-/**
- * 返回不带0x00 00 00 01头的pps
- * @return
- */
-static string getH264PPS(const RtmpPacket &thiz) {
-    string ret;
-    if (thiz.getMediaType() != FLV_CODEC_H264) {
-        return ret;
-    }
-    if (!thiz.isCfgFrame()) {
-        return ret;
-    }
-    if (thiz.buffer.size() < 13) {
-        WarnL << "bad H264 cfg!";
-        return ret;
-    }
-    uint16_t sps_size ;
+    uint16_t sps_size;
     memcpy(&sps_size, thiz.buffer.data() + 11, 2);
     sps_size = ntohs(sps_size);
 
     if ((int) thiz.buffer.size() < 13 + sps_size + 1 + 2) {
-        WarnL << "bad H264 cfg!";
-        return ret;
+        return false;
     }
-    uint16_t pps_size ;
+    uint16_t pps_size;
     memcpy(&pps_size, thiz.buffer.data() + 13 + sps_size + 1, 2);
     pps_size = ntohs(pps_size);
 
     if ((int) thiz.buffer.size() < 13 + sps_size + 1 + 2 + pps_size) {
-        WarnL << "bad H264 cfg!";
-        return ret;
+        return false;
     }
-    ret.assign(thiz.buffer.data() + 13 + sps_size + 1 + 2, pps_size);
-    return ret;
+    sps.assign(thiz.buffer.data() + 13, sps_size);
+    pps.assign(thiz.buffer.data() + 13 + sps_size + 1 + 2, pps_size);
+    return true;
 }
 
 void H264RtmpDecoder::inputRtmp(const RtmpPacket::Ptr &pkt) {
     if (pkt->isCfgFrame()) {
         //缓存sps pps，后续插入到I帧之前
-        _sps = getH264SPS(*pkt);
-        _pps  = getH264PPS(*pkt);
-        onGetH264(_sps.data(), _sps.size(), pkt->time_stamp , pkt->time_stamp);
-        onGetH264(_pps.data(), _pps.size(), pkt->time_stamp , pkt->time_stamp);
+        if (!getH264Config(*pkt, _sps, _pps)) {
+            WarnL << "get h264 sps/pps failed, rtmp packet is: " << hexdump(pkt->data(), pkt->size());
+            return;
+        }
+        onGetH264(_sps.data(), _sps.size(), pkt->time_stamp, pkt->time_stamp);
+        onGetH264(_pps.data(), _pps.size(), pkt->time_stamp, pkt->time_stamp);
         return;
     }
 
@@ -115,24 +90,18 @@ void H264RtmpDecoder::inputRtmp(const RtmpPacket::Ptr &pkt) {
     }
 }
 
-inline void H264RtmpDecoder::onGetH264(const char* pcData, size_t iLen, uint32_t dts,uint32_t pts) {
-    if(iLen == 0){
+inline void H264RtmpDecoder::onGetH264(const char* data, size_t len, uint32_t dts, uint32_t pts) {
+    if (!len) {
         return;
     }
-#if 1
     _h264frame->_dts = dts;
     _h264frame->_pts = pts;
     _h264frame->_buffer.assign("\x00\x00\x00\x01", 4);  //添加264头
-    _h264frame->_buffer.append(pcData, iLen);
+    _h264frame->_buffer.append(data, len);
 
     //写入环形缓存
     RtmpCodec::inputFrame(_h264frame);
     _h264frame = obtainFrame();
-#else
-    //防止内存拷贝，这样产生的264帧不会有0x00 00 01头
-    auto frame = std::make_shared<H264FrameNoCacheAble>((char *)pcData,iLen,dts,pts,0);
-    RtmpCodec::inputFrame(frame);
-#endif
 }
 
 ////////////////////////////////////////////////////////////////////////
@@ -155,26 +124,32 @@ void H264RtmpEncoder::makeConfigPacket(){
     }
 }
 
+void H264RtmpEncoder::flush() {
+    inputFrame(nullptr);
+}
+
 bool H264RtmpEncoder::inputFrame(const Frame::Ptr &frame) {
-    auto data = frame->data() + frame->prefixSize();
-    auto len = frame->size() - frame->prefixSize();
-    auto type = H264_TYPE(data[0]);
-    switch (type) {
-        case H264Frame::NAL_SPS: {
-            if (!_got_config_frame) {
-                _sps = string(data, len);
-                makeConfigPacket();
+    if (frame) {
+        auto data = frame->data() + frame->prefixSize();
+        auto len = frame->size() - frame->prefixSize();
+        auto type = H264_TYPE(data[0]);
+        switch (type) {
+            case H264Frame::NAL_SPS: {
+                if (!_got_config_frame) {
+                    _sps = string(data, len);
+                    makeConfigPacket();
+                }
+                break;
             }
-            break;
-        }
-        case H264Frame::NAL_PPS: {
-            if (!_got_config_frame) {
-                _pps = string(data, len);
-                makeConfigPacket();
+            case H264Frame::NAL_PPS: {
+                if (!_got_config_frame) {
+                    _pps = string(data, len);
+                    makeConfigPacket();
+                }
+                break;
             }
-            break;
+            default: break;
         }
-        default : break;
     }
 
     if (!_rtmp_packet) {
@@ -183,7 +158,7 @@ bool H264RtmpEncoder::inputFrame(const Frame::Ptr &frame) {
         _rtmp_packet->buffer.resize(5);
     }
 
-    return _merger.inputFrame(frame, [this](uint32_t dts, uint32_t pts, const Buffer::Ptr &, bool have_key_frame) {
+    return _merger.inputFrame(frame, [this](uint64_t dts, uint64_t pts, const Buffer::Ptr &, bool have_key_frame) {
         //flags
         _rtmp_packet->buffer[0] = FLV_CODEC_H264 | ((have_key_frame ? FLV_KEY_FRAME : FLV_INTER_FRAME) << 4);
         //not config

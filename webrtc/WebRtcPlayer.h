@@ -13,6 +13,8 @@
 
 #include "WebRtcTransport.h"
 
+namespace mediakit {
+
 class WebRtcPlayer : public WebRtcTransportImp {
 public:
     using Ptr = std::shared_ptr<WebRtcPlayer>;
@@ -24,7 +26,7 @@ protected:
     void onStartWebRTC() override;
     void onDestory() override;
     void onRtcConfigure(RtcConfigure &configure) const override;
-    void onRecvRtp(MediaTrack &track, const string &rid, RtpPacket::Ptr rtp) override {};
+    void onRecvRtp(MediaTrack &track, const std::string &rid, RtpPacket::Ptr rtp) override {};
 
 private:
     WebRtcPlayer(const EventPoller::Ptr &poller, const RtspMediaSource::Ptr &src, const MediaInfo &info);
@@ -38,5 +40,5 @@ private:
     RtspMediaSource::RingType::RingReader::Ptr _reader;
 };
 
-
-#endif //ZLMEDIAKIT_WEBRTCPLAYER_H
+}// namespace mediakit
+#endif // ZLMEDIAKIT_WEBRTCPLAYER_H

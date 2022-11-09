@@ -11,20 +11,12 @@
 #include "MediaSink.h"
 #include "Extension/AAC.h"
 
-//最多等待未初始化的Track 10秒，超时之后会忽略未初始化的Track
-static size_t constexpr kMaxWaitReadyMS= 10000;
-
-//如果直播流只有单Track，最多等待3秒，超时后未收到其他Track的数据，则认为是单Track
-static size_t constexpr kMaxAddTrackMS = 3000;
-
-//如果track未就绪，我们先缓存帧数据，但是有最大个数限制(100帧时大约4秒)，防止内存溢出
-static size_t constexpr kMaxUnreadyFrame = 100;
+using namespace std;
 
 namespace mediakit{
 
 bool MediaSink::addTrack(const Track::Ptr &track_in) {
-    GET_CONFIG(bool, enabel_audio, General::kEnableAudio);
-    if (!enabel_audio) {
+    if (!_enable_audio) {
         //关闭音频时，加快单视频流注册速度
         _max_track_size = 1;
         if (track_in->getTrackType() == TrackAudio) {
@@ -45,11 +37,13 @@ bool MediaSink::addTrack(const Track::Ptr &track_in) {
     };
     _ticker.resetTime();
 
-    track->addDelegate(std::make_shared<FrameWriterInterfaceHelper>([this](const Frame::Ptr &frame) {
+    track->addDelegate([this](const Frame::Ptr &frame) {
         if (_all_track_ready) {
             return onTrackFrame(frame);
         }
         auto &frame_unread = _frame_unread[frame->getTrackType()];
+
+        GET_CONFIG(uint32_t, kMaxUnreadyFrame, General::kUnreadyFrameCache);
         if (frame_unread.size() > kMaxUnreadyFrame) {
             //未就绪的的track，不能缓存太多的帧，否则可能内存溢出
             frame_unread.clear();
@@ -58,7 +52,7 @@ bool MediaSink::addTrack(const Track::Ptr &track_in) {
         //还有Track未就绪，先缓存之
         frame_unread.emplace_back(Frame::getCacheAbleFrame(frame));
         return true;
-    }));
+    });
     return true;
 }
 
@@ -102,6 +96,7 @@ void MediaSink::checkTrackIfReady(){
     }
 
     if(!_all_track_ready){
+        GET_CONFIG(uint32_t, kMaxWaitReadyMS, General::kWaitTrackReadyMS);
         if(_ticker.elapsedTime() > kMaxWaitReadyMS){
             //如果超过规定时间，那么不再等待并忽略未准备好的Track
             emitAllTrackReady();
@@ -119,6 +114,7 @@ void MediaSink::checkTrackIfReady(){
             return;
         }
 
+        GET_CONFIG(uint32_t, kMaxAddTrackMS, General::kWaitAddTrackMS);
         if(_track_map.size() == 1 && _ticker.elapsedTime() > kMaxAddTrackMS){
             //如果只有一个Track，那么在该Track添加后，我们最多还等待若干时间(可能后面还会添加Track)
             emitAllTrackReady();
@@ -163,7 +159,7 @@ void MediaSink::emitAllTrackReady() {
                 continue;
             }
             pr.second.for_each([&](const Frame::Ptr &frame) {
-                onTrackFrame(frame);
+                inputFrame(frame);
             });
         }
         _frame_unread.clear();
@@ -172,8 +168,7 @@ void MediaSink::emitAllTrackReady() {
 
 void MediaSink::onAllTrackReady_l() {
     //是否添加静音音频
-    GET_CONFIG(bool, add_mute_audio, General::kAddMuteAudio);
-    if (add_mute_audio) {
+    if (_add_mute_audio) {
         addMuteAudioTrack();
     }
     onAllTrackReady();
@@ -228,7 +223,7 @@ static uint8_t s_mute_adts[] = {0xff, 0xf1, 0x6c, 0x40, 0x2d, 0x3f, 0xfc, 0x00, 
 
 #define MUTE_ADTS_DATA s_mute_adts
 #define MUTE_ADTS_DATA_LEN sizeof(s_mute_adts)
-#define MUTE_ADTS_DATA_MS 130
+#define MUTE_ADTS_DATA_MS 128
 
 bool MuteAudioMaker::inputFrame(const Frame::Ptr &frame) {
     if (frame->getTrackType() == TrackVideo) {
@@ -244,8 +239,7 @@ bool MuteAudioMaker::inputFrame(const Frame::Ptr &frame) {
 }
 
 bool MediaSink::addMuteAudioTrack() {
-    GET_CONFIG(bool, enabel_audio, General::kEnableAudio);
-    if (!enabel_audio) {
+    if (!_enable_audio) {
         return false;
     }
     if (_track_map.find(TrackAudio) != _track_map.end()) {
@@ -253,16 +247,28 @@ bool MediaSink::addMuteAudioTrack() {
     }
     auto audio = std::make_shared<AACTrack>(makeAacConfig(MUTE_ADTS_DATA, ADTS_HEADER_LEN));
     _track_map[audio->getTrackType()] = std::make_pair(audio, true);
-    audio->addDelegate(std::make_shared<FrameWriterInterfaceHelper>([this](const Frame::Ptr &frame) {
+    audio->addDelegate([this](const Frame::Ptr &frame) {
         return onTrackFrame(frame);
-    }));
+    });
     _mute_audio_maker = std::make_shared<MuteAudioMaker>();
-    _mute_audio_maker->addDelegate(std::make_shared<FrameWriterInterfaceHelper>([audio](const Frame::Ptr &frame) {
+    _mute_audio_maker->addDelegate([audio](const Frame::Ptr &frame) {
         return audio->inputFrame(frame);
-    }));
+    });
     onTrackReady(audio);
     TraceL << "mute aac track added";
     return true;
+}
+
+bool MediaSink::isAllTrackReady() const {
+    return _all_track_ready;
+}
+
+void MediaSink::enableAudio(bool flag) {
+    _enable_audio = flag;
+}
+
+void MediaSink::enableMuteAudio(bool flag) {
+    _add_mute_audio = flag;
 }
 
 }//namespace mediakit

@@ -22,67 +22,6 @@ namespace toolkit {
 
 namespace mediakit{
 
-/**
- * 该对象的功能是把一个不可缓存的帧转换成可缓存的帧
- */
-class FrameCacheAble : public FrameFromPtr {
-public:
-    typedef std::shared_ptr<FrameCacheAble> Ptr;
-
-    FrameCacheAble(const Frame::Ptr &frame){
-        if (frame->cacheAble()) {
-            _frame = frame;
-            _ptr = frame->data();
-        } else {
-            _buffer = FrameImp::create();
-            _buffer->_buffer.assign(frame->data(), frame->size());
-            _ptr = _buffer->data();
-        }
-        _size = frame->size();
-        _dts = frame->dts();
-        _pts = frame->pts();
-        _prefix_size = frame->prefixSize();
-        _codec_id = frame->getCodecId();
-        _key = frame->keyFrame();
-        _config = frame->configFrame();
-        _drop_able = frame->dropAble();
-        _decode_able = frame->decodeAble();
-    }
-
-    ~FrameCacheAble() override = default;
-
-    /**
-     * 可以被缓存
-     */
-    bool cacheAble() const override {
-        return true;
-    }
-
-    bool keyFrame() const override{
-        return _key;
-    }
-
-    bool configFrame() const override{
-        return _config;
-    }
-
-    bool dropAble() const override {
-        return _drop_able;
-    }
-
-    bool decodeAble() const override {
-        return _decode_able;
-    }
-
-private:
-    bool _key;
-    bool _config;
-    bool _drop_able;
-    bool _decode_able;
-    Frame::Ptr _frame;
-    FrameImp::Ptr _buffer;
-};
-
 Frame::Ptr Frame::getCacheAbleFrame(const Frame::Ptr &frame){
     if(frame->cacheAble()){
         return frame;
@@ -92,7 +31,7 @@ Frame::Ptr Frame::getCacheAbleFrame(const Frame::Ptr &frame){
 
 TrackType getTrackType(CodecId codecId) {
     switch (codecId) {
-#define XX(name, type, value, str) case name : return type;
+#define XX(name, type, value, str, mpeg_id) case name : return type;
         CODEC_MAP(XX)
 #undef XX
         default : return TrackInvalid;
@@ -101,14 +40,14 @@ TrackType getTrackType(CodecId codecId) {
 
 const char *getCodecName(CodecId codec) {
     switch (codec) {
-#define XX(name, type, value, str) case name : return str;
+#define XX(name, type, value, str, mpeg_id) case name : return str;
         CODEC_MAP(XX)
 #undef XX
         default : return "invalid";
     }
 }
 
-#define XX(name, type, value, str) {str, name},
+#define XX(name, type, value, str, mpeg_id) {str, name},
 static map<string, CodecId, StrCaseCompare> codec_map = {CODEC_MAP(XX)};
 #undef XX
 
@@ -151,6 +90,9 @@ bool FrameMerger::willFlush(const Frame::Ptr &frame) const{
     if (_frame_cache.empty()) {
         //缓存为空
         return false;
+    }
+    if (!frame) {
+        return true;
     }
     switch (_type) {
         case none : {
@@ -213,7 +155,7 @@ void FrameMerger::doMerge(BufferLikeString &merged, const Frame::Ptr &frame) con
     }
 }
 
-bool FrameMerger::inputFrame(const Frame::Ptr &frame, const onOutput &cb, BufferLikeString *buffer) {
+bool FrameMerger::inputFrame(const Frame::Ptr &frame, onOutput cb, BufferLikeString *buffer) {
     if (willFlush(frame)) {
         Frame::Ptr back = _frame_cache.back();
         Buffer::Ptr merged_frame = back;
@@ -241,21 +183,14 @@ bool FrameMerger::inputFrame(const Frame::Ptr &frame, const onOutput &cb, Buffer
         _have_decode_able_frame = false;
     }
 
-    switch (_type) {
-        case h264_prefix:
-        case mp4_nal_size: {
-            if (frame->dropAble()) {
-                //h264头和mp4头模式过滤无效的帧
-                return false;
-            }
-            break;
-        }
-        default: break;
+    if (!frame) {
+        return false;
     }
 
     if (frame->decodeAble()) {
         _have_decode_able_frame = true;
     }
+    _cb = std::move(cb);
     _frame_cache.emplace_back(Frame::getCacheAbleFrame(frame));
     return true;
 }
@@ -267,6 +202,40 @@ FrameMerger::FrameMerger(int type) {
 void FrameMerger::clear() {
     _frame_cache.clear();
     _have_decode_able_frame = false;
+}
+
+void FrameMerger::flush() {
+    if (_cb) {
+        inputFrame(nullptr, std::move(_cb), nullptr);
+    }
+    clear();
+}
+/**
+ * 写帧接口转function，辅助类
+ */
+class FrameWriterInterfaceHelper : public FrameWriterInterface {
+public:
+    using Ptr = std::shared_ptr<FrameWriterInterfaceHelper>;
+    using onWriteFrame = std::function<bool(const Frame::Ptr &frame)>;
+
+    /**
+     * inputFrame后触发onWriteFrame回调
+     */
+    FrameWriterInterfaceHelper(onWriteFrame cb) { _callback = std::move(cb); }
+
+    virtual ~FrameWriterInterfaceHelper() = default;
+
+    /**
+     * 写入帧数据
+     */
+    bool inputFrame(const Frame::Ptr &frame) override { return _callback(frame); }
+
+private:
+    onWriteFrame _callback;
+};
+
+FrameWriterInterface* FrameDispatcher::addDelegate(std::function<bool(const Frame::Ptr &frame)> cb) {
+    return addDelegate(std::make_shared<FrameWriterInterfaceHelper>(std::move(cb)));
 }
 
 }//namespace mediakit

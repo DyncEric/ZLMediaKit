@@ -11,22 +11,30 @@
 #include "FlvMuxer.h"
 #include "Util/File.h"
 #include "Rtmp/utils.h"
+#include "Http/HttpSession.h"
 
 #define FILE_BUF_SIZE (64 * 1024)
 
+using namespace std;
+using namespace toolkit;
+
 namespace mediakit {
 
-void FlvMuxer::start(const EventPoller::Ptr &poller, const RtmpMediaSource::Ptr &media) {
+FlvMuxer::FlvMuxer(){
+    _packet_pool.setSize(64);
+}
+
+void FlvMuxer::start(const EventPoller::Ptr &poller, const RtmpMediaSource::Ptr &media, uint32_t start_pts) {
     if (!media) {
         throw std::runtime_error("RtmpMediaSource 无效");
     }
     if (!poller->isCurrentThread()) {
-        weak_ptr<FlvMuxer> weakSelf = getSharedPtr();
+        weak_ptr<FlvMuxer> weak_self = getSharedPtr();
         //延时两秒启动录制，目的是为了等待config帧收集完毕
-        poller->doDelayTask(2000, [weakSelf, poller, media]() {
-            auto strongSelf = weakSelf.lock();
-            if (strongSelf) {
-                strongSelf->start(poller, media);
+        poller->doDelayTask(2000, [weak_self, poller, media, start_pts]() {
+            auto strong_self = weak_self.lock();
+            if (strong_self) {
+                strong_self->start(poller, media, start_pts);
             }
             return 0;
         });
@@ -35,42 +43,52 @@ void FlvMuxer::start(const EventPoller::Ptr &poller, const RtmpMediaSource::Ptr 
 
     onWriteFlvHeader(media);
 
-    std::weak_ptr<FlvMuxer> weakSelf = getSharedPtr();
+    std::weak_ptr<FlvMuxer> weak_self = getSharedPtr();
     media->pause(false);
     _ring_reader = media->getRing()->attach(poller);
-    _ring_reader->setDetachCB([weakSelf]() {
-        auto strongSelf = weakSelf.lock();
-        if (!strongSelf) {
+    _ring_reader->setGetInfoCB([weak_self]() { return dynamic_pointer_cast<HttpSession>(weak_self.lock()); });
+    _ring_reader->setDetachCB([weak_self]() {
+        auto strong_self = weak_self.lock();
+        if (!strong_self) {
             return;
         }
-        strongSelf->onDetach();
+        strong_self->onDetach();
     });
 
-    //音频同步于视频
-    _stamp[0].syncTo(_stamp[1]);
-    _ring_reader->setReadCB([weakSelf](const RtmpMediaSource::RingDataType &pkt) {
-        auto strongSelf = weakSelf.lock();
-        if (!strongSelf) {
+    bool check = start_pts > 0;
+    _ring_reader->setReadCB([weak_self, start_pts, check](const RtmpMediaSource::RingDataType &pkt) mutable {
+        auto strong_self = weak_self.lock();
+        if (!strong_self) {
             return;
         }
 
         size_t i = 0;
         auto size = pkt->size();
         pkt->for_each([&](const RtmpPacket::Ptr &rtmp) {
-            strongSelf->onWriteRtmp(rtmp, ++i == size);
+            if (check) {
+                if (rtmp->time_stamp < start_pts) {
+                    return;
+                }
+                check = false;
+            }
+            strong_self->onWriteRtmp(rtmp, ++i == size);
         });
     });
 }
 
+BufferRaw::Ptr FlvMuxer::obtainBuffer() {
+    return _packet_pool.obtain2();
+}
+
 BufferRaw::Ptr FlvMuxer::obtainBuffer(const void *data, size_t len) {
-    auto buffer = BufferRaw::create();
+    auto buffer = obtainBuffer();
     buffer->assign((const char *) data, len);
     return buffer;
 }
 
 void FlvMuxer::onWriteFlvHeader(const RtmpMediaSource::Ptr &src) {
     //发送flv文件头
-    auto buffer = BufferRaw::create();
+    auto buffer = obtainBuffer();
     buffer->setCapacity(sizeof(FLVHeader));
     buffer->setSize(sizeof(FLVHeader));
 
@@ -129,9 +147,7 @@ void FlvMuxer::onWriteFlvTag(uint8_t type, const Buffer::Ptr &buffer, uint32_t t
 }
 
 void FlvMuxer::onWriteRtmp(const RtmpPacket::Ptr &pkt, bool flush) {
-    int64_t dts_out;
-    _stamp[pkt->type_id % 2].revise(pkt->time_stamp, 0, dts_out, dts_out);
-    onWriteFlvTag(pkt, (uint32_t) dts_out, flush);
+    onWriteFlvTag(pkt, pkt->time_stamp, flush);
 }
 
 void FlvMuxer::stop() {

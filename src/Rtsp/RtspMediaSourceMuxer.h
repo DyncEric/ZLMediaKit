@@ -16,20 +16,20 @@
 
 namespace mediakit {
 
-class RtspMediaSourceMuxer : public RtspMuxer, public MediaSourceEventInterceptor,
-                             public std::enable_shared_from_this<RtspMediaSourceMuxer> {
+class RtspMediaSourceMuxer final : public RtspMuxer, public MediaSourceEventInterceptor,
+                                   public std::enable_shared_from_this<RtspMediaSourceMuxer> {
 public:
     typedef std::shared_ptr<RtspMediaSourceMuxer> Ptr;
 
-    RtspMediaSourceMuxer(const string &vhost,
-                         const string &strApp,
-                         const string &strId,
+    RtspMediaSourceMuxer(const std::string &vhost,
+                         const std::string &strApp,
+                         const std::string &strId,
                          const TitleSdp::Ptr &title = nullptr) : RtspMuxer(title){
         _media_src = std::make_shared<RtspMediaSource>(vhost,strApp,strId);
         getRtpRing()->setDelegate(_media_src);
     }
 
-    ~RtspMediaSourceMuxer() override{}
+    ~RtspMediaSourceMuxer() override { RtspMuxer::flush(); }
 
     void setListener(const std::weak_ptr<MediaSourceEvent> &listener){
         setDelegate(listener);

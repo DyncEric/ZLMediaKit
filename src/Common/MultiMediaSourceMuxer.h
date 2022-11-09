@@ -21,22 +21,88 @@
 #include "TS/TSMediaSourceMuxer.h"
 #include "FMP4/FMP4MediaSourceMuxer.h"
 
-namespace mediakit{
+namespace mediakit {
+
+class ProtocolOption {
+public:
+    ProtocolOption();
+
+    //是否开启转换为hls
+    bool enable_hls = false;
+    //是否开启MP4录制
+    bool enable_mp4 = false;
+    //是否将mp4录制当做观看者
+    bool mp4_as_player = false;
+    //是否开启转换为rtsp/webrtc
+    bool enable_rtsp = true;
+    //是否开启转换为rtmp/flv
+    bool enable_rtmp = true;
+    //是否开启转换为http-ts/ws-ts
+    bool enable_ts = true;
+    //是否开启转换为http-fmp4/ws-fmp4
+    bool enable_fmp4 = true;
+
+    //转协议是否开启音频
+    bool enable_audio = true;
+    //添加静音音频，在关闭音频时，此开关无效
+    bool add_mute_audio = true;
+
+    //mp4录制保存路径
+    std::string mp4_save_path;
+    //mp4切片大小，单位秒
+    size_t mp4_max_second = 0;
+
+    //hls录制保存路径
+    std::string hls_save_path;
+
+    //断连续推延时，单位毫秒，默认采用配置文件
+    uint32_t continue_push_ms;
+    
+    //时间戳修复这一路流标志位
+    bool modify_stamp;
+
+    template <typename MAP>
+    ProtocolOption(const MAP &allArgs) : ProtocolOption() {
+        #define GET_OPT_VALUE(key) getArgsValue(allArgs, #key, key)
+        GET_OPT_VALUE(enable_hls);
+        GET_OPT_VALUE(enable_mp4);
+        GET_OPT_VALUE(mp4_as_player);
+        GET_OPT_VALUE(enable_rtsp);
+        GET_OPT_VALUE(enable_rtmp);
+        GET_OPT_VALUE(enable_ts);
+        GET_OPT_VALUE(enable_fmp4);
+        GET_OPT_VALUE(enable_audio);
+        GET_OPT_VALUE(add_mute_audio);
+        GET_OPT_VALUE(mp4_save_path);
+        GET_OPT_VALUE(mp4_max_second);
+        GET_OPT_VALUE(hls_save_path);
+        GET_OPT_VALUE(continue_push_ms);
+        GET_OPT_VALUE(modify_stamp);
+    }
+
+private:
+    template <typename MAP, typename KEY, typename TYPE>
+    static void getArgsValue(const MAP &allArgs, const KEY &key, TYPE &value) {
+        auto val = ((MAP &)allArgs)[key];
+        if (!val.empty()) {
+            value = (TYPE)val;
+        }
+    }
+};
 
 class MultiMediaSourceMuxer : public MediaSourceEventInterceptor, public MediaSink, public std::enable_shared_from_this<MultiMediaSourceMuxer>{
 public:
     typedef std::shared_ptr<MultiMediaSourceMuxer> Ptr;
 
-    class Listener{
+    class Listener {
     public:
         Listener() = default;
         virtual ~Listener() = default;
         virtual void onAllTrackReady() = 0;
     };
 
+    MultiMediaSourceMuxer(const std::string &vhost, const std::string &app, const std::string &stream, float dur_sec = 0.0,const ProtocolOption &option = ProtocolOption());
     ~MultiMediaSourceMuxer() override = default;
-    MultiMediaSourceMuxer(const string &vhost, const string &app, const string &stream, float dur_sec = 0.0,
-                          bool enable_rtsp = true, bool enable_rtmp = true, bool enable_hls = true, bool enable_mp4 = false);
 
     /**
      * 设置事件监听器
@@ -87,7 +153,7 @@ public:
      * @param custom_path 开启录制时，指定自定义路径
      * @return 是否设置成功
      */
-    bool setupRecord(MediaSource &sender, Recorder::type type, bool start, const string &custom_path, size_t max_second) override;
+    bool setupRecord(MediaSource &sender, Recorder::type type, bool start, const std::string &custom_path, size_t max_second) override;
 
     /**
      * 获取录制状态
@@ -104,20 +170,30 @@ public:
      * @param is_udp 是否为udp
      * @param cb 启动成功或失败回调
      */
-    void startSendRtp(MediaSource &sender, const string &dst_url, uint16_t dst_port, const string &ssrc, bool is_udp, uint16_t src_port, const function<void(uint16_t local_port, const SockException &ex)> &cb) override;
+    void startSendRtp(MediaSource &sender, const MediaSourceEvent::SendRtpArgs &args, const std::function<void(uint16_t, const toolkit::SockException &)> cb) override;
 
     /**
      * 停止ps-rtp发送
      * @return 是否成功
      */
-    bool stopSendRtp(MediaSource &sender, const string &ssrc) override;
+    bool stopSendRtp(MediaSource &sender, const std::string &ssrc) override;
 
     /**
      * 获取所有Track
      * @param trackReady 是否筛选过滤未就绪的track
      * @return 所有Track
      */
-    vector<Track::Ptr> getMediaTracks(MediaSource &sender, bool trackReady = true) const override;
+    std::vector<Track::Ptr> getMediaTracks(MediaSource &sender, bool trackReady = true) const override;
+
+    /**
+     * 获取所属线程
+     */
+    toolkit::EventPoller::Ptr getOwnerPoller(MediaSource &sender) override;
+
+    const std::string& getVhost() const;
+    const std::string& getApp() const;
+    const std::string& getStreamId() const;
+    std::string shortUrl() const;
 
 protected:
     /////////////////////////////////MediaSink override/////////////////////////////////
@@ -142,13 +218,16 @@ protected:
 
 private:
     bool _is_enable = false;
-    Ticker _last_check;
+    bool _create_in_poller = false;
+    std::string _vhost;
+    std::string _app;
+    std::string _stream_id;
+    ProtocolOption _option;
+    toolkit::Ticker _last_check;
     Stamp _stamp[2];
     std::weak_ptr<Listener> _track_listener;
-    function<string()> _get_origin_url;
 #if defined(ENABLE_RTPPROXY)
-    mutex _rtp_sender_mtx;
-	unordered_map<string, RtpSender::Ptr> _rtp_sender;
+    std::unordered_map<std::string, RtpSender::Ptr> _rtp_sender;
 #endif //ENABLE_RTPPROXY
 
 #if defined(ENABLE_MP4)
@@ -159,9 +238,10 @@ private:
     TSMediaSourceMuxer::Ptr _ts;
     MediaSinkInterface::Ptr _mp4;
     HlsRecorder::Ptr _hls;
+    toolkit::EventPoller::Ptr _poller;
 
     //对象个数统计
-    ObjectStatistic<MultiMediaSourceMuxer> _statistic;
+    toolkit::ObjectStatistic<MultiMediaSourceMuxer> _statistic;
 };
 
 }//namespace mediakit

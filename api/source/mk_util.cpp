@@ -8,10 +8,13 @@
  * may be found in the AUTHORS file in the root of the source tree.
  */
 
+#include <cstdarg>
+#include <cassert>
+
 #include "mk_util.h"
-#include <assert.h>
 #include "Util/util.h"
 #include "Util/logger.h"
+
 using namespace std;
 using namespace toolkit;
 
@@ -47,7 +50,7 @@ API_EXPORT char* API_CALL mk_util_hex_dump(const void *buf, int len){
 API_EXPORT void API_CALL mk_log_printf(int level, const char *file, const char *function, int line, const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
-    toolkit::LoggerWrapper::printLog(getLogger(), level, file, function, line, fmt, ap);
+    toolkit::LoggerWrapper::printLogV(getLogger(), level, file, function, line, fmt, ap);
     va_end(ap);
 }
 

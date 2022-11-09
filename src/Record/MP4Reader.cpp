@@ -9,36 +9,49 @@
  */
 
 #ifdef ENABLE_MP4
+
 #include "MP4Reader.h"
 #include "Common/config.h"
 #include "Thread/WorkThreadPool.h"
+
+using namespace std;
 using namespace toolkit;
+
 namespace mediakit {
 
-MP4Reader::MP4Reader(const string &strVhost,const string &strApp, const string &strId,const string &filePath ) {
+MP4Reader::MP4Reader(const string &vhost, const string &app, const string &stream_id, const string &file_path) {
+    //读写文件建议放在后台线程
     _poller = WorkThreadPool::Instance().getPoller();
-    _file_path = filePath;
-    if(_file_path.empty()){
-        GET_CONFIG(string,recordPath,Record::kFilePath);
-        GET_CONFIG(bool,enableVhost,General::kEnableVhost);
-        if(enableVhost){
-            _file_path = strVhost + "/" + strApp + "/" + strId;
-        }else{
-            _file_path = strApp + "/" + strId;
+    _file_path = file_path;
+    if (_file_path.empty()) {
+        GET_CONFIG(string, recordPath, Record::kFilePath);
+        GET_CONFIG(bool, enableVhost, General::kEnableVhost);
+        if (enableVhost) {
+            _file_path = vhost + "/" + app + "/" + stream_id;
+        } else {
+            _file_path = app + "/" + stream_id;
         }
-        _file_path = File::absolutePath(_file_path,recordPath);
+        _file_path = File::absolutePath(_file_path, recordPath);
     }
 
     _demuxer = std::make_shared<MP4Demuxer>();
     _demuxer->openMP4(_file_path);
-    _muxer = std::make_shared<MultiMediaSourceMuxer>(strVhost, strApp, strId, _demuxer->getDurationMS() / 1000.0f, true, true, false, false);
+
+    if (stream_id.empty()) {
+        return;
+    }
+    ProtocolOption option;
+    //读取mp4文件并流化时，不重复生成mp4/hls文件
+    option.enable_mp4 = false;
+    option.enable_hls = false;
+    _muxer = std::make_shared<MultiMediaSourceMuxer>(vhost, app, stream_id, _demuxer->getDurationMS() / 1000.0f, option);
     auto tracks = _demuxer->getTracks(false);
-    if(tracks.empty()){
+    if (tracks.empty()) {
         throw std::runtime_error(StrPrinter << "该mp4文件没有有效的track:" << _file_path);
     }
-    for(auto &track : tracks){
+    for (auto &track : tracks) {
         _muxer->addTrack(track);
-        if(track->getTrackType() == TrackVideo){
+        if (track->getTrackType() == TrackVideo) {
             _have_video = true;
         }
     }
@@ -55,19 +68,19 @@ bool MP4Reader::readSample() {
 
     bool keyFrame = false;
     bool eof = false;
-    while (!eof) {
+    while (!eof && _last_dts < getCurrentStamp()) {
         auto frame = _demuxer->readFrame(keyFrame, eof);
         if (!frame) {
             continue;
         }
-        _muxer->inputFrame(frame);
-        if (frame->dts() > getCurrentStamp()) {
-            break;
+        _last_dts = frame->dts();
+        if (_muxer) {
+            _muxer->inputFrame(frame);
         }
     }
 
-    GET_CONFIG(bool, fileRepeat, Record::kFileRepeat);
-    if (eof && fileRepeat) {
+    GET_CONFIG(bool, file_repeat, Record::kFileRepeat);
+    if (eof && (file_repeat || _file_repeat)) {
         //需要从头开始看
         seekTo(0);
         return true;
@@ -76,33 +89,71 @@ bool MP4Reader::readSample() {
     return !eof;
 }
 
-void MP4Reader::startReadMP4() {
-    GET_CONFIG(uint32_t, sampleMS, Record::kSampleMS);
-    auto strongSelf = shared_from_this();
-    _muxer->setMediaListener(strongSelf);
+bool MP4Reader::readNextSample() {
+    bool keyFrame = false;
+    bool eof = false;
+    auto frame = _demuxer->readFrame(keyFrame, eof);
+    if (!frame) {
+        return false;
+    }
+    if (_muxer) {
+        _muxer->inputFrame(frame);
+    }
+    setCurrentStamp(frame->dts());
+    return true;
+}
 
-    //先获取关键帧
-    seekTo(0);
-    //读sampleMS毫秒的数据用于产生MediaSource
-    setCurrentStamp(getCurrentStamp() + sampleMS);
-    readSample();
+void MP4Reader::stopReadMP4() {
+    _timer = nullptr;
+}
+
+void MP4Reader::startReadMP4(uint64_t sample_ms, bool ref_self, bool file_repeat) {
+    GET_CONFIG(uint32_t, sampleMS, Record::kSampleMS);
+    auto strong_self = shared_from_this();
+    if (_muxer) {
+        //一直读到所有track就绪为止
+        while (!_muxer->isAllTrackReady() && readNextSample());
+        //注册后再切换OwnerPoller
+        _muxer->setMediaListener(strong_self);
+    }
+
+    auto timer_sec = (sample_ms ? sample_ms : sampleMS) / 1000.0f;
 
     //启动定时器
-    _timer = std::make_shared<Timer>(sampleMS / 1000.0f, [strongSelf]() {
-        lock_guard<recursive_mutex> lck(strongSelf->_mtx);
-        return strongSelf->readSample();
-    }, _poller);
+    if (ref_self) {
+        _timer = std::make_shared<Timer>(timer_sec, [strong_self]() {
+            lock_guard<recursive_mutex> lck(strong_self->_mtx);
+            return strong_self->readSample();
+        }, _poller);
+    } else {
+        weak_ptr<MP4Reader> weak_self = strong_self;
+        _timer = std::make_shared<Timer>(timer_sec, [weak_self]() {
+            auto strong_self = weak_self.lock();
+            if (!strong_self) {
+                return false;
+            }
+            lock_guard<recursive_mutex> lck(strong_self->_mtx);
+            return strong_self->readSample();
+        }, _poller);
+    }
+
+    _file_repeat = file_repeat;
+}
+
+const MP4Demuxer::Ptr &MP4Reader::getDemuxer() const {
+    return _demuxer;
 }
 
 uint32_t MP4Reader::getCurrentStamp() {
-    return (uint32_t)(_seek_to + !_paused * _speed * _seek_ticker.elapsedTime());
+    return (uint32_t) (_seek_to + !_paused * _speed * _seek_ticker.elapsedTime());
 }
 
-void MP4Reader::setCurrentStamp(uint32_t new_stamp){
+void MP4Reader::setCurrentStamp(uint32_t new_stamp) {
     auto old_stamp = getCurrentStamp();
     _seek_to = new_stamp;
+    _last_dts = new_stamp;
     _seek_ticker.resetTime();
-    if (old_stamp != new_stamp) {
+    if (old_stamp != new_stamp && _muxer) {
         //时间轴未拖动时不操作
         _muxer->setTimeStamp(new_stamp);
     }
@@ -141,22 +192,21 @@ bool MP4Reader::speed(MediaSource &sender, float speed) {
     return true;
 }
 
-bool MP4Reader::seekTo(uint32_t ui32Stamp) {
+bool MP4Reader::seekTo(uint32_t stamp_seek) {
     lock_guard<recursive_mutex> lck(_mtx);
-    if (ui32Stamp > _demuxer->getDurationMS()) {
+    if (stamp_seek > _demuxer->getDurationMS()) {
         //超过文件长度
         return false;
     }
-    auto stamp = _demuxer->seekTo(ui32Stamp);
-    if(stamp == -1){
+    auto stamp = _demuxer->seekTo(stamp_seek);
+    if (stamp == -1) {
         //seek失败
         return false;
     }
 
-    if(!_have_video){
-        //没有视频，不需要搜索关键帧
-        //设置当前时间戳
-        setCurrentStamp((uint32_t)stamp);
+    if (!_have_video) {
+        //没有视频，不需要搜索关键帧；设置当前时间戳
+        setCurrentStamp((uint32_t) stamp);
         return true;
     }
     //搜索到下一帧关键帧
@@ -164,13 +214,15 @@ bool MP4Reader::seekTo(uint32_t ui32Stamp) {
     bool eof = false;
     while (!eof) {
         auto frame = _demuxer->readFrame(keyFrame, eof);
-        if(!frame){
+        if (!frame) {
             //文件读完了都未找到下一帧关键帧
             continue;
         }
-        if(keyFrame || frame->keyFrame() || frame->configFrame()){
+        if (keyFrame || frame->keyFrame() || frame->configFrame()) {
             //定位到key帧
-            _muxer->inputFrame(frame);
+            if (_muxer) {
+                _muxer->inputFrame(frame);
+            }
             //设置当前时间戳
             setCurrentStamp(frame->dts());
             return true;
@@ -179,17 +231,10 @@ bool MP4Reader::seekTo(uint32_t ui32Stamp) {
     return false;
 }
 
-bool MP4Reader::close(MediaSource &sender,bool force){
-    if(!_muxer || (!force && _muxer->totalReaderCount())){
-        return false;
-    }
-    _timer.reset();
-    WarnL << sender.getSchema() << "/" << sender.getVhost() << "/" << sender.getApp() << "/" << sender.getId() << " " << force;
+bool MP4Reader::close(MediaSource &sender) {
+    _timer = nullptr;
+    WarnL << "close media: " << sender.getUrl();
     return true;
-}
-
-int MP4Reader::totalReaderCount(MediaSource &sender) {
-    return _muxer ? _muxer->totalReaderCount() : sender.readerCount();
 }
 
 MediaOriginType MP4Reader::getOriginType(MediaSource &sender) const {
@@ -198,6 +243,10 @@ MediaOriginType MP4Reader::getOriginType(MediaSource &sender) const {
 
 string MP4Reader::getOriginUrl(MediaSource &sender) const {
     return _file_path;
+}
+
+toolkit::EventPoller::Ptr MP4Reader::getOwnerPoller(MediaSource &sender) {
+    return _poller;
 }
 
 } /* namespace mediakit */

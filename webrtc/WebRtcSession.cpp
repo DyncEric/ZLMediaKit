@@ -11,6 +11,10 @@
 #include "WebRtcSession.h"
 #include "Util/util.h"
 
+using namespace std;
+
+namespace mediakit {
+
 static string getUserName(const Buffer::Ptr &buffer) {
     auto buf = buffer->data();
     auto len = buffer->size();
@@ -43,7 +47,7 @@ EventPoller::Ptr WebRtcSession::queryPoller(const Buffer::Ptr &buffer) {
 
 WebRtcSession::WebRtcSession(const Socket::Ptr &sock) : UdpSession(sock) {
     socklen_t addr_len = sizeof(_peer_addr);
-    getpeername(sock->rawFD(), &_peer_addr, &addr_len);
+    getpeername(sock->rawFD(), (struct sockaddr *)&_peer_addr, &addr_len);
 }
 
 WebRtcSession::~WebRtcSession() {
@@ -51,19 +55,10 @@ WebRtcSession::~WebRtcSession() {
 }
 
 void WebRtcSession::onRecv(const Buffer::Ptr &buffer) {
-    try {
-        onRecv_l(buffer);
-    } catch (std::exception &ex) {
-        shutdown(SockException(Err_shutdown, ex.what()));
-    }
-}
-
-void WebRtcSession::onRecv_l(const Buffer::Ptr &buffer) {
     if (_find_transport) {
         //只允许寻找一次transport
         _find_transport = false;
         auto user_name = getUserName(buffer);
-        _identifier = user_name + '-' + to_string(reinterpret_cast<uint64_t>(this));
         auto transport = WebRtcTransportManager::Instance().getItem(user_name);
         CHECK(transport && transport->getPoller()->isCurrentThread());
         transport->setSession(shared_from_this());
@@ -72,7 +67,7 @@ void WebRtcSession::onRecv_l(const Buffer::Ptr &buffer) {
     }
     _ticker.resetTime();
     CHECK(_transport);
-    _transport->inputSockData(buffer->data(), buffer->size(), &_peer_addr);
+    _transport->inputSockData(buffer->data(), buffer->size(), (struct sockaddr *)&_peer_addr);
 }
 
 void WebRtcSession::onError(const SockException &err) {
@@ -91,7 +86,7 @@ void WebRtcSession::onError(const SockException &err) {
 }
 
 void WebRtcSession::onManager() {
-    GET_CONFIG(float, timeoutSec, RTC::kTimeOutSec);
+    GET_CONFIG(float, timeoutSec, Rtc::kTimeOutSec);
     if (!_transport && _ticker.createdTime() > timeoutSec * 1000) {
         shutdown(SockException(Err_timeout, "illegal webrtc connection"));
         return;
@@ -102,7 +97,6 @@ void WebRtcSession::onManager() {
     }
 }
 
-std::string WebRtcSession::getIdentifier() const {
-    return _identifier;
-}
+}// namespace mediakit
+
 

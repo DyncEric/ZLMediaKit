@@ -16,7 +16,7 @@
 #include "IceServer.hpp"
 #include "WebRtcTransport.h"
 
-using namespace toolkit;
+namespace mediakit {
 
 class WebRtcSession : public UdpSession {
 public:
@@ -26,20 +26,17 @@ public:
     void onRecv(const Buffer::Ptr &) override;
     void onError(const SockException &err) override;
     void onManager() override;
-    std::string getIdentifier() const override;
+    //std::string getIdentifier() const override;
 
     static EventPoller::Ptr queryPoller(const Buffer::Ptr &buffer);
 
 private:
-    void onRecv_l(const Buffer::Ptr &);
-
-private:
-    std::string _identifier;
     bool _find_transport = true;
     Ticker _ticker;
-    struct sockaddr _peer_addr;
+    struct sockaddr_storage _peer_addr;
     std::shared_ptr<WebRtcTransportImp> _transport;
 };
 
+}// namespace mediakit
 
 #endif //ZLMEDIAKIT_WEBRTCSESSION_H

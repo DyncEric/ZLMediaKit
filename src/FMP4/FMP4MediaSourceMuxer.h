@@ -18,18 +18,18 @@
 
 namespace mediakit {
 
-class FMP4MediaSourceMuxer : public MP4MuxerMemory, public MediaSourceEventInterceptor,
-                             public std::enable_shared_from_this<FMP4MediaSourceMuxer> {
+class FMP4MediaSourceMuxer final : public MP4MuxerMemory, public MediaSourceEventInterceptor,
+                                   public std::enable_shared_from_this<FMP4MediaSourceMuxer> {
 public:
     using Ptr = std::shared_ptr<FMP4MediaSourceMuxer>;
 
-    FMP4MediaSourceMuxer(const string &vhost,
-                         const string &app,
-                         const string &stream_id) {
+    FMP4MediaSourceMuxer(const std::string &vhost,
+                         const std::string &app,
+                         const std::string &stream_id) {
         _media_src = std::make_shared<FMP4MediaSource>(vhost, app, stream_id);
     }
 
-    ~FMP4MediaSourceMuxer() override = default;
+    ~FMP4MediaSourceMuxer() override { MP4MuxerMemory::flush(); };
 
     void setListener(const std::weak_ptr<MediaSourceEvent> &listener){
         setDelegate(listener);
@@ -72,7 +72,7 @@ public:
     }
 
 protected:
-    void onSegmentData(const string &string, uint32_t stamp, bool key_frame) override {
+    void onSegmentData(std::string string, uint64_t stamp, bool key_frame) override {
         if (string.empty()) {
             return;
         }

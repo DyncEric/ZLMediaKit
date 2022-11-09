@@ -14,6 +14,8 @@
 #include "Http/HttpSession.h"
 #include "Rtsp/RtspSession.h"
 #include "Record/MP4Recorder.h"
+
+using namespace toolkit;
 using namespace mediakit;
 
 static void* s_tag;
@@ -102,9 +104,7 @@ API_EXPORT void API_CALL mk_events_listen(const mk_events *events){
                                              (mk_publish_auth_invoker) &invoker,
                                              (mk_sock_info) &sender);
             } else {
-                GET_CONFIG(bool, toHls, General::kPublishToHls);
-                GET_CONFIG(bool, toMP4, General::kPublishToMP4);
-                invoker("", toHls, toMP4);
+                invoker("", ProtocolOption());
             }
         });
 
@@ -141,8 +141,10 @@ API_EXPORT void API_CALL mk_events_listen(const mk_events *events){
 
         NoticeCenter::Instance().addListener(&s_tag,Broadcast::kBroadcastNotFoundStream,[](BroadcastNotFoundStreamArgs){
             if (s_events.on_mk_media_not_found) {
-                s_events.on_mk_media_not_found((mk_media_info) &args,
-                                               (mk_sock_info) &sender);
+                if (s_events.on_mk_media_not_found((mk_media_info) &args,
+                                                   (mk_sock_info) &sender)) {
+                    closePlayer();
+                }
             }
         });
 

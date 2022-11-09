@@ -12,22 +12,22 @@
 #define ZLMEDIAKIT_TSMEDIASOURCEMUXER_H
 
 #include "TSMediaSource.h"
-#include "Record/TsMuxer.h"
+#include "Record/MPEG.h"
 
 namespace mediakit {
 
-class TSMediaSourceMuxer : public TsMuxer, public MediaSourceEventInterceptor,
-                           public std::enable_shared_from_this<TSMediaSourceMuxer> {
+class TSMediaSourceMuxer final : public MpegMuxer, public MediaSourceEventInterceptor,
+                                 public std::enable_shared_from_this<TSMediaSourceMuxer> {
 public:
     using Ptr = std::shared_ptr<TSMediaSourceMuxer>;
 
-    TSMediaSourceMuxer(const string &vhost,
-                       const string &app,
-                       const string &stream_id) {
+    TSMediaSourceMuxer(const std::string &vhost,
+                       const std::string &app,
+                       const std::string &stream_id) : MpegMuxer(false) {
         _media_src = std::make_shared<TSMediaSource>(vhost, app, stream_id);
     }
 
-    ~TSMediaSourceMuxer() override = default;
+    ~TSMediaSourceMuxer() override { MpegMuxer::flush(); };
 
     void setListener(const std::weak_ptr<MediaSourceEvent> &listener){
         setDelegate(listener);
@@ -54,7 +54,7 @@ public:
             _media_src->clearCache();
         }
         if (_enabled || !ts_demand) {
-            return TsMuxer::inputFrame(frame);
+            return MpegMuxer::inputFrame(frame);
         }
         return false;
     }
@@ -66,13 +66,13 @@ public:
     }
 
 protected:
-    void onTs(std::shared_ptr<Buffer> buffer, uint32_t timestamp, bool is_idr_fast_packet) override {
+    void onWrite(std::shared_ptr<toolkit::Buffer> buffer, uint64_t timestamp, bool key_pos) override {
         if (!buffer) {
             return;
         }
         auto packet = std::make_shared<TSPacket>(std::move(buffer));
         packet->time_stamp = timestamp;
-        _media_src->onWrite(std::move(packet), is_idr_fast_packet);
+        _media_src->onWrite(std::move(packet), key_pos);
     }
 
 private:

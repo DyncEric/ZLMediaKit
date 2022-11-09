@@ -16,17 +16,15 @@
 #include "Extension/AAC.h"
 
 using namespace toolkit;
+using namespace std;
 
 namespace mediakit {
 
-PlayerProxy::PlayerProxy(const string &vhost, const string &app, const string &stream_id,
-                         bool enable_hls, bool enable_mp4, int retry_count, const EventPoller::Ptr &poller)
-        : MediaPlayer(poller) {
+PlayerProxy::PlayerProxy(const string &vhost, const string &app, const string &stream_id, const ProtocolOption &option,
+                         int retry_count, const EventPoller::Ptr &poller) : MediaPlayer(poller) , _option(option) {
     _vhost = vhost;
     _app = app;
     _stream_id = stream_id;
-    _enable_hls = enable_hls;
-    _enable_mp4 = enable_mp4;
     _retry_count = retry_count;
     _on_close = [](const SockException &) {};
     (*this)[Client::kWaitTrackReady] = false;
@@ -55,6 +53,8 @@ void PlayerProxy::play(const string &strUrlTmp) {
         }
 
         if (!err) {
+            // 取消定时器,避免hls拉流索引文件因为网络波动失败重连成功后出现循环重试的情况
+           strongSelf->_timer.reset();
             // 播放成功
             *piFailedCnt = 0;//连续播放失败次数清0
             strongSelf->onPlaySuccess();
@@ -81,8 +81,8 @@ void PlayerProxy::play(const string &strUrlTmp) {
                 track->delDelegate(strongSelf->_muxer.get());
             }
 
-            GET_CONFIG(bool, resetWhenRePlay, General::kResetWhenRePlay);
-            if (resetWhenRePlay) {
+            GET_CONFIG(bool, reset_when_replay, General::kResetWhenRePlay);
+            if (reset_when_replay) {
                 strongSelf->_muxer.reset();
             } else {
                 strongSelf->_muxer->resetTracks();
@@ -115,12 +115,16 @@ void PlayerProxy::setDirectProxy() {
     }
     if (mediaSource) {
         setMediaSource(mediaSource);
-        mediaSource->setListener(shared_from_this());
     }
 }
 
 PlayerProxy::~PlayerProxy() {
     _timer.reset();
+    // 避免析构时, 忘记回调api请求
+     if(_on_play) {
+        _on_play(SockException(Err_shutdown, "player proxy close"));
+        _on_play = nullptr;
+    }
 }
 
 void PlayerProxy::rePlay(const string &strUrl, int iFailedCnt) {
@@ -139,11 +143,7 @@ void PlayerProxy::rePlay(const string &strUrl, int iFailedCnt) {
     }, getPoller());
 }
 
-bool PlayerProxy::close(MediaSource &sender, bool force) {
-    if (!force && totalReaderCount()) {
-        return false;
-    }
-
+bool PlayerProxy::close(MediaSource &sender) {
     //通知其停止推流
     weak_ptr<PlayerProxy> weakSelf = dynamic_pointer_cast<PlayerProxy>(shared_from_this());
     getPoller()->async_first([weakSelf]() {
@@ -156,7 +156,7 @@ bool PlayerProxy::close(MediaSource &sender, bool force) {
         strongSelf->teardown();
     });
     _on_close(SockException(Err_shutdown, "closed by user"));
-    WarnL << sender.getSchema() << "/" << sender.getVhost() << "/" << sender.getApp() << "/" << sender.getId() << " " << force;
+    WarnL << "close media: " << sender.getUrl();
     return true;
 }
 
@@ -180,22 +180,28 @@ std::shared_ptr<SockInfo> PlayerProxy::getOriginSock(MediaSource &sender) const 
     return getSockInfo();
 }
 
+float PlayerProxy::getLossRate(MediaSource &sender, TrackType type) {
+    return getPacketLossRate(type);
+}
+
 void PlayerProxy::onPlaySuccess() {
-    GET_CONFIG(bool, resetWhenRePlay, General::kResetWhenRePlay);
+    GET_CONFIG(bool, reset_when_replay, General::kResetWhenRePlay);
     if (dynamic_pointer_cast<RtspMediaSource>(_media_src)) {
         //rtsp拉流代理
-        if (resetWhenRePlay || !_muxer) {
-            _muxer = std::make_shared<MultiMediaSourceMuxer>(_vhost, _app, _stream_id, getDuration(), false, true, _enable_hls, _enable_mp4);
+        if (reset_when_replay || !_muxer) {
+            _option.enable_rtsp = false;
+            _muxer = std::make_shared<MultiMediaSourceMuxer>(_vhost, _app, _stream_id, getDuration(), _option);
         }
     } else if (dynamic_pointer_cast<RtmpMediaSource>(_media_src)) {
         //rtmp拉流代理
-        if (resetWhenRePlay || !_muxer) {
-            _muxer = std::make_shared<MultiMediaSourceMuxer>(_vhost, _app, _stream_id, getDuration(), true, false, _enable_hls, _enable_mp4);
+        if (reset_when_replay || !_muxer) {
+            _option.enable_rtmp = false;
+            _muxer = std::make_shared<MultiMediaSourceMuxer>(_vhost, _app, _stream_id, getDuration(), _option);
         }
     } else {
         //其他拉流代理
-        if (resetWhenRePlay || !_muxer) {
-            _muxer = std::make_shared<MultiMediaSourceMuxer>(_vhost, _app, _stream_id, getDuration(), true, true, _enable_hls, _enable_mp4);
+        if (reset_when_replay || !_muxer) {
+            _muxer = std::make_shared<MultiMediaSourceMuxer>(_vhost, _app, _stream_id, getDuration(), _option);
         }
     }
     _muxer->setMediaListener(shared_from_this());

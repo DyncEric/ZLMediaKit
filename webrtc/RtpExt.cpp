@@ -15,6 +15,11 @@
 #pragma pack(push, 1)
 #endif // defined(_WIN32)
 
+using namespace std;
+using namespace toolkit;
+
+namespace mediakit {
+
 //https://tools.ietf.org/html/draft-holmer-rmcat-transport-wide-cc-extensions-01
 //https://tools.ietf.org/html/rfc5285
 
@@ -185,7 +190,7 @@ map<uint8_t/*id*/, RtpExt/*data*/> RtpExt::getExtValue(const RtpHeader *header) 
         appendExt<RtpExtOneByte>(ret, ptr, end);
         return ret;
     }
-    if ((reserved & 0xFFF0) >> 4 == kTwoByteHeader) {
+    if ((reserved & 0xFFF0) == kTwoByteHeader) {
         appendExt<RtpExtTwoByte>(ret, ptr, end);
         return ret;
     }
@@ -578,7 +583,7 @@ RtpExt RtpExtContext::changeRtpExtId(const RtpHeader *header, bool is_recv, stri
         if (is_recv) {
             auto it = _rtp_ext_id_to_type.find(pr.first);
             if (it == _rtp_ext_id_to_type.end()) {
-                WarnL << "接收rtp时,忽略不识别的rtp ext, id=" << (int) pr.first;
+                //TraceL << "接收rtp时,忽略不识别的rtp ext, id=" << (int) pr.first;
                 pr.second.clearExt();
                 continue;
             }
@@ -594,7 +599,7 @@ RtpExt RtpExtContext::changeRtpExtId(const RtpHeader *header, bool is_recv, stri
             pr.second.setType((RtpExtType) pr.first);
             auto it = _rtp_ext_type_to_id.find((RtpExtType) pr.first);
             if (it == _rtp_ext_type_to_id.end()) {
-                WarnL << "发送rtp时, 忽略不被客户端支持rtp ext:" << pr.second.dumpString();
+                //TraceL << "发送rtp时, 忽略不被客户端支持rtp ext:" << pr.second.dumpString();
                 pr.second.clearExt();
                 continue;
             }
@@ -640,3 +645,4 @@ void RtpExtContext::onGetRtp(uint8_t pt, uint32_t ssrc, const string &rid){
     }
 }
 
+}// namespace mediakit

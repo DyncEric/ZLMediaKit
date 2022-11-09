@@ -11,7 +11,10 @@
 #include "AACRtmp.h"
 #include "Rtmp/Rtmp.h"
 
-namespace mediakit{
+using namespace std;
+using namespace toolkit;
+
+namespace mediakit {
 
 static string getAacCfg(const RtmpPacket &thiz) {
     string ret;
@@ -22,7 +25,7 @@ static string getAacCfg(const RtmpPacket &thiz) {
         return ret;
     }
     if (thiz.buffer.size() < 4) {
-        WarnL << "bad aac cfg!";
+        WarnL << "get aac config failed, rtmp packet is: " << hexdump(thiz.data(), thiz.size());
         return ret;
     }
     ret = thiz.buffer.substr(2);
@@ -32,7 +35,9 @@ static string getAacCfg(const RtmpPacket &thiz) {
 void AACRtmpDecoder::inputRtmp(const RtmpPacket::Ptr &pkt) {
     if (pkt->isCfgFrame()) {
         _aac_cfg = getAacCfg(*pkt);
-        onGetAAC(nullptr, 0, 0);
+        if (!_aac_cfg.empty()) {
+            onGetAAC(nullptr, 0, 0);
+        }
         return;
     }
 

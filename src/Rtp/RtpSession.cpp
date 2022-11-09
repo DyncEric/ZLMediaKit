@@ -13,14 +13,20 @@
 #include "RtpSelector.h"
 #include "Network/TcpServer.h"
 #include "Rtsp/RtpReceiver.h"
+
+using namespace std;
+using namespace toolkit;
+
 namespace mediakit{
 
 const string RtpSession::kStreamID = "stream_id";
 const string RtpSession::kIsUDP = "is_udp";
+const string RtpSession::kSSRC = "ssrc";
 
 void RtpSession::attachServer(const Server &server) {
     _stream_id = const_cast<Server &>(server)[kStreamID];
     _is_udp = const_cast<Server &>(server)[kIsUDP];
+    _ssrc = const_cast<Server &>(server)[kSSRC];
 
     if (_is_udp) {
         //设置udp socket读缓存
@@ -34,7 +40,7 @@ void RtpSession::attachServer(const Server &server) {
 RtpSession::RtpSession(const Socket::Ptr &sock) : Session(sock) {
     DebugP(this);
     socklen_t addr_len = sizeof(_addr);
-    getpeername(sock->rawFD(), &_addr, &addr_len);
+    getpeername(sock->rawFD(), (struct sockaddr *)&_addr, &addr_len);
 }
 
 RtpSession::~RtpSession() {
@@ -45,21 +51,15 @@ RtpSession::~RtpSession() {
 }
 
 void RtpSession::onRecv(const Buffer::Ptr &data) {
-    try {
-        if (_is_udp) {
-            onRtpPacket(data->data(), data->size());
-            return;
-        }
-        RtpSplitter::input(data->data(), data->size());
-    } catch (SockException &ex) {
-        shutdown(ex);
-    } catch (std::exception &ex) {
-        shutdown(SockException(Err_other, ex.what()));
+    if (_is_udp) {
+        onRtpPacket(data->data(), data->size());
+        return;
     }
+    RtpSplitter::input(data->data(), data->size());
 }
 
 void RtpSession::onError(const SockException &err) {
-    WarnL << _stream_id << " " << err.what();
+    WarnP(this) << _stream_id << " " << err.what();
 }
 
 void RtpSession::onManager() {
@@ -91,7 +91,8 @@ void RtpSession::onRtpPacket(const char *data, size_t len) {
         }
     }
     if (!_process) {
-        if (!RtpSelector::getSSRC(data, len, _ssrc)) {
+        //未设置ssrc时，尝试获取ssrc
+        if (!_ssrc && !RtpSelector::getSSRC(data, len, _ssrc)) {
             return;
         }
         if (_stream_id.empty()) {
@@ -100,10 +101,16 @@ void RtpSession::onRtpPacket(const char *data, size_t len) {
         }
         //tcp情况下，一个tcp链接只可能是一路流，不需要通过多个ssrc来区分，所以不需要频繁getProcess
         _process = RtpSelector::Instance().getProcess(_stream_id, true);
-        _process->setListener(dynamic_pointer_cast<RtpSession>(shared_from_this()));
+        _process->setDelegate(dynamic_pointer_cast<RtpSession>(shared_from_this()));
     }
     try {
-        _process->inputRtp(false, getSock(), data, len, &_addr);
+        uint32_t rtp_ssrc = 0;
+        RtpSelector::getSSRC(data, len, rtp_ssrc);
+        if (rtp_ssrc != _ssrc) {
+            WarnP(this) << "ssrc不匹配,rtp已丢弃:" << rtp_ssrc << " != " << _ssrc;
+            return;
+        }
+        _process->inputRtp(false, getSock(), data, len, (struct sockaddr *)&_addr);
     } catch (RtpTrack::BadRtpException &ex) {
         if (!_is_udp) {
             WarnL << ex.what() << "，开始搜索ssrc以便恢复上下文";
@@ -117,19 +124,11 @@ void RtpSession::onRtpPacket(const char *data, size_t len) {
     _ticker.resetTime();
 }
 
-bool RtpSession::close(MediaSource &sender, bool force) {
+bool RtpSession::close(MediaSource &sender) {
     //此回调在其他线程触发
-    if(!_process || (!force && _process->getTotalReaderCount())){
-        return false;
-    }
-    string err = StrPrinter << "close media:" << sender.getSchema() << "/" << sender.getVhost() << "/" << sender.getApp() << "/" << sender.getId() << " " << force;
-    safeShutdown(SockException(Err_shutdown,err));
+    string err = StrPrinter << "close media: " << sender.getUrl();
+    safeShutdown(SockException(Err_shutdown, err));
     return true;
-}
-
-int RtpSession::totalReaderCount(MediaSource &sender) {
-    //此回调在其他线程触发
-    return _process ? _process->getTotalReaderCount() : sender.totalReaderCount();
 }
 
 static const char *findSSRC(const char *data, ssize_t len, uint32_t ssrc) {
@@ -177,6 +176,10 @@ const char *RtpSession::onSearchPacketTail(const char *data, size_t len) {
     if (ssrc_offset == rtp_len + 2 || ssrc_offset == rtp_len + 4) {
         InfoL << "rtp搜索成功，tcp上下文恢复成功，丢弃的rtp残余数据为：" << rtp_len_ptr - data;
         _search_rtp_finished = true;
+        if (rtp_len_ptr == data) {
+            //停止搜索rtp，否则会进入死循环
+            _search_rtp = false;
+        }
         //前面的数据都需要丢弃，这个是rtp的起始
         return rtp_len_ptr;
     }

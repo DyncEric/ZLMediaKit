@@ -17,8 +17,6 @@
 #include "RtpCodec.h"
 #include "RtspMediaSource.h"
 #include "Common/Stamp.h"
-using namespace std;
-using namespace toolkit;
 
 namespace mediakit {
 
@@ -28,7 +26,7 @@ public:
     PacketSortor() = default;
     ~PacketSortor() = default;
 
-    void setOnSort(function<void(SEQ seq, T &packet)> cb) {
+    void setOnSort(std::function<void(SEQ seq, T &packet)> cb) {
         _cb = std::move(cb);
     }
 
@@ -62,6 +60,10 @@ public:
      * @param packet 包负载
      */
     void sortPacket(SEQ seq, T packet) {
+        if(!_is_inited && _next_seq_out == 0){
+            _next_seq_out = seq;
+            _is_inited = true;
+        }
         if (seq < _next_seq_out) {
             if (_next_seq_out < seq + kMax) {
                 //过滤seq回退包(回环包除外)
@@ -116,7 +118,7 @@ private:
         _pkt_sort_cache_map.erase(it);
     }
 
-    void popIterator(typename map<SEQ, T>::iterator it) {
+    void popIterator(typename std::map<SEQ, T>::iterator it) {
         auto seq = it->first;
         auto data = std::move(it->second);
         _pkt_sort_cache_map.erase(it);
@@ -149,6 +151,9 @@ private:
     }
 
 private:
+    //第一个包是已经进入
+    bool _is_inited = false;
+
     //下次应该输出的SEQ
     SEQ _next_seq_out = 0;
     //seq回环次数计数
@@ -156,14 +161,14 @@ private:
     //排序缓存长度
     size_t _max_sort_size = kMin;
     //pkt排序缓存，根据seq排序
-    map<SEQ, T> _pkt_sort_cache_map;
+    std::map<SEQ, T> _pkt_sort_cache_map;
     //回调
-    function<void(SEQ seq, T &packet)> _cb;
+    std::function<void(SEQ seq, T &packet)> _cb;
 };
 
 class RtpTrack : private PacketSortor<RtpPacket::Ptr>{
 public:
-    class BadRtpException : public invalid_argument {
+    class BadRtpException : public std::invalid_argument {
     public:
         template<typename Type>
         BadRtpException(Type &&type) : invalid_argument(std::forward<Type>(type)) {}
@@ -177,6 +182,7 @@ public:
     uint32_t getSSRC() const;
     RtpPacket::Ptr inputRtp(TrackType type, int sample_rate, uint8_t *ptr, size_t len);
     void setNtpStamp(uint32_t rtp_stamp, uint64_t ntp_stamp_ms);
+    void setPT(uint8_t pt);
 
 protected:
     virtual void onRtpSorted(RtpPacket::Ptr rtp) {}
@@ -184,15 +190,16 @@ protected:
 
 private:
     bool _disable_ntp = false;
+    uint8_t _pt = 0xFF;
     uint32_t _ssrc = 0;
-    Ticker _ssrc_alive;
+    toolkit::Ticker _ssrc_alive;
     NtpStamp _ntp_stamp;
 };
 
 class RtpTrackImp : public RtpTrack{
 public:
-    using OnSorted = function<void(RtpPacket::Ptr)>;
-    using BeforeSorted = function<void(const RtpPacket::Ptr &)>;
+    using OnSorted = std::function<void(RtpPacket::Ptr)>;
+    using BeforeSorted = std::function<void(const RtpPacket::Ptr &)>;
 
     RtpTrackImp() = default;
     ~RtpTrackImp() override = default;
@@ -236,7 +243,8 @@ public:
      * @param len rtp数据指针长度
      * @return 解析成功返回true
      */
-    bool handleOneRtp(int index, TrackType type, int sample_rate, uint8_t *ptr, size_t len){
+    bool handleOneRtp(int index, TrackType type, int sample_rate, uint8_t *ptr, size_t len) {
+        assert(index < kCount && index >= 0);
         return _track[index].inputRtp(type, sample_rate, ptr, len).operator bool();
     }
 
@@ -247,8 +255,14 @@ public:
      * @param rtp_stamp rtp时间戳
      * @param ntp_stamp_ms ntp时间戳
      */
-    void setNtpStamp(int index, uint32_t rtp_stamp, uint64_t ntp_stamp_ms){
+    void setNtpStamp(int index, uint32_t rtp_stamp, uint64_t ntp_stamp_ms) {
+        assert(index < kCount && index >= 0);
         _track[index].setNtpStamp(rtp_stamp, ntp_stamp_ms);
+    }
+
+    void setPT(int index, uint8_t pt){
+        assert(index < kCount && index >= 0);
+        _track[index].setPT(pt);
     }
 
     void clear() {
@@ -258,14 +272,17 @@ public:
     }
 
     size_t getJitterSize(int index) const {
+        assert(index < kCount && index >= 0);
         return _track[index].getJitterSize();
     }
 
     size_t getCycleCount(int index) const {
+        assert(index < kCount && index >= 0);
         return _track[index].getCycleCount();
     }
 
     uint32_t getSSRC(int index) const {
+        assert(index < kCount && index >= 0);
         return _track[index].getSSRC();
     }
 

@@ -28,10 +28,6 @@ extern "C" {
 
 #include "Network/Buffer.h"
 #include "SDLAudioDevice.h"
-#include "FFMpegDecoder.h"
-
-using namespace std;
-using namespace toolkit;
 
 class AudioSRCDelegate {
 public:
@@ -58,7 +54,7 @@ private:
     int _buf_size = 0;
     std::shared_ptr<char> _buf;
     AudioSRCDelegate *_delegate = nullptr;
-    BufferLikeString _target_buf;
+    toolkit::BufferLikeString _target_buf;
     SDL_AudioCVT _audio_cvt;
 };
 
@@ -79,8 +75,8 @@ private:
 private:
     int _sample_rate, _channel;
     SDL_AudioFormat _format;
-    mutex _mtx;
-    BufferLikeString _buffer;
+    std::mutex _mtx;
+    toolkit::BufferLikeString _buffer;
     SDLAudioDevice::Ptr _device;
 };
 

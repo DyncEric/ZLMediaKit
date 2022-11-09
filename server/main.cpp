@@ -16,6 +16,7 @@
 #include "Util/onceToken.h"
 #include "Util/CMD.h"
 #include "Network/TcpServer.h"
+#include "Network/UdpServer.h"
 #include "Poller/EventPoller.h"
 #include "Common/config.h"
 #include "Rtsp/RtspSession.h"
@@ -31,8 +32,13 @@
 #include "../webrtc/WebRtcSession.h"
 #endif
 
+#if defined(ENABLE_SRT)
+#include "../srt/SrtSession.hpp"
+#include "../srt/SrtTransport.hpp"
+#endif
+
 #if defined(ENABLE_VERSION)
-#include "Version.h"
+#include "version.h"
 #endif
 
 #if !defined(_WIN32)
@@ -194,8 +200,6 @@ int start_main(int argc,char *argv[]) {
         string ssl_file = cmd_main["ssl"];
         int threads = cmd_main["threads"];
 
-        setThreadName("main thread");
-
         //设置日志
         Logger::Instance().add(std::make_shared<ConsoleChannel>("ConsoleChannel", logLevel));
 #ifndef ANDROID
@@ -207,9 +211,10 @@ int start_main(int argc,char *argv[]) {
 
 #if !defined(_WIN32)
         pid_t pid = getpid();
+        bool kill_parent_if_failed = true;
         if (bDaemon) {
             //启动守护进程
-            System::startDaemon();
+            System::startDaemon(kill_parent_if_failed);
         }
         //开启崩溃捕获等
         System::systemSetup();
@@ -217,6 +222,9 @@ int start_main(int argc,char *argv[]) {
 
         //启动异步日志线程
         Logger::Instance().setWriter(std::make_shared<AsyncLogWriter>());
+
+        InfoL << kServerName;
+
         //加载配置文件，如果配置文件不存在就创建一个
         loadIniConfig(g_ini_file.data());
 
@@ -248,28 +256,28 @@ int start_main(int argc,char *argv[]) {
 
         //简单的telnet服务器，可用于服务器调试，但是不能使用23端口，否则telnet上了莫名其妙的现象
         //测试方法:telnet 127.0.0.1 9000
-        TcpServer::Ptr shellSrv = std::make_shared<TcpServer>();
+        auto shellSrv = std::make_shared<TcpServer>();
 
         //rtsp[s]服务器, 可用于诸如亚马逊echo show这样的设备访问
-        TcpServer::Ptr rtspSrv = std::make_shared<TcpServer>();;
-        TcpServer::Ptr rtspSSLSrv = std::make_shared<TcpServer>();;
+        auto rtspSrv = std::make_shared<TcpServer>();;
+        auto rtspSSLSrv = std::make_shared<TcpServer>();;
 
         //rtmp[s]服务器
-        TcpServer::Ptr rtmpSrv = std::make_shared<TcpServer>();;
-        TcpServer::Ptr rtmpsSrv = std::make_shared<TcpServer>();;
+        auto rtmpSrv = std::make_shared<TcpServer>();;
+        auto rtmpsSrv = std::make_shared<TcpServer>();;
 
         //http[s]服务器
-        TcpServer::Ptr httpSrv = std::make_shared<TcpServer>();;
-        TcpServer::Ptr httpsSrv = std::make_shared<TcpServer>();;
+        auto httpSrv = std::make_shared<TcpServer>();;
+        auto httpsSrv = std::make_shared<TcpServer>();;
 
 #if defined(ENABLE_RTPPROXY)
         //GB28181 rtp推流端口，支持UDP/TCP
-        RtpServer::Ptr rtpServer = std::make_shared<RtpServer>();
+        auto rtpServer = std::make_shared<RtpServer>();
 #endif//defined(ENABLE_RTPPROXY)
 
 #if defined(ENABLE_WEBRTC)
         //webrtc udp服务器
-        UdpServer::Ptr rtcSrv = std::make_shared<UdpServer>();
+        auto rtcSrv = std::make_shared<UdpServer>();
         rtcSrv->setOnCreateSocket([](const EventPoller::Ptr &poller, const Buffer::Ptr &buf, struct sockaddr *, int) {
             if (!buf) {
                 return Socket::createSocket(poller, false);
@@ -281,8 +289,26 @@ int start_main(int argc,char *argv[]) {
             }
             return Socket::createSocket(new_poller, false);
         });
-        uint16_t rtcPort = mINI::Instance()[RTC::kPort];
+        uint16_t rtcPort = mINI::Instance()[Rtc::kPort];
 #endif//defined(ENABLE_WEBRTC)
+
+
+#if defined(ENABLE_SRT)
+        auto srtSrv = std::make_shared<UdpServer>();
+        srtSrv->setOnCreateSocket([](const EventPoller::Ptr &poller, const Buffer::Ptr &buf, struct sockaddr *, int) {
+            if (!buf) {
+                return Socket::createSocket(poller, false);
+            }
+            auto new_poller = SRT::SrtSession::queryPoller(buf);
+            if (!new_poller) {
+                //握手第一阶段
+                return Socket::createSocket(poller, false);
+            }
+            return Socket::createSocket(new_poller, false);
+        });
+
+        uint16_t srtPort = mINI::Instance()[SRT::kPort];
+#endif //defined(ENABLE_SRT)
 
         try {
             //rtsp服务器，端口默认554
@@ -313,12 +339,18 @@ int start_main(int argc,char *argv[]) {
             if (rtcPort) { rtcSrv->start<WebRtcSession>(rtcPort); }
 #endif//defined(ENABLE_WEBRTC)
 
+#if defined(ENABLE_SRT)
+        // srt udp服务器
+        if(srtPort) { srtSrv->start<SRT::SrtSession>(srtPort); }
+#endif//defined(ENABLE_SRT)
+
         } catch (std::exception &ex) {
             WarnL << "端口占用或无权限:" << ex.what() << endl;
             ErrorL << "程序启动失败，请修改配置文件中端口号后重试!" << endl;
             sleep(1);
 #if !defined(_WIN32)
-            if (pid != getpid()) {
+            if (pid != getpid() && kill_parent_if_failed) {
+                //杀掉守护进程
                 kill(pid, SIGINT);
             }
 #endif

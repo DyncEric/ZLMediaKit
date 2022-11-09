@@ -11,6 +11,9 @@
 #include "RtspMuxer.h"
 #include "Extension/Factory.h"
 
+using namespace std;
+using namespace toolkit;
+
 namespace mediakit {
 
 void RtspMuxer::onRtp(RtpPacket::Ptr in, bool is_key) {
@@ -81,6 +84,14 @@ void RtspMuxer::trySyncTrack() {
 bool RtspMuxer::inputFrame(const Frame::Ptr &frame) {
     auto &encoder = _encoder[frame->getTrackType()];
     return encoder ? encoder->inputFrame(frame) : false;
+}
+
+void RtspMuxer::flush() {
+    for (auto &encoder : _encoder) {
+        if (encoder) {
+            encoder->flush();
+        }
+    }
 }
 
 string RtspMuxer::getSdp() {
