@@ -14,7 +14,6 @@
 #include <memory>
 #include <string>
 #include <functional>
-#include "Util/util.h"
 #include "Util/TimeTicker.h"
 #include "Common/MultiMediaSourceMuxer.h"
 
@@ -118,6 +117,11 @@ public:
      * @param cts 采集时间戳，单位毫秒
      */
     bool inputPCM(char *data, int len, uint64_t cts);
+
+    //// 重载基类方法，确保线程安全 ////
+    bool inputFrame(const Frame::Ptr &frame) override;
+    bool addTrack(const Track::Ptr & track) override;
+    void addTrackCompleted() override;
 
 private:
     MediaOriginType getOriginType(MediaSource &sender) const override;

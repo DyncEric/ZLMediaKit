@@ -23,7 +23,7 @@ namespace mediakit{
 class RtpSelector;
 class RtpProcessHelper : public MediaSourceEvent , public std::enable_shared_from_this<RtpProcessHelper> {
 public:
-    typedef std::shared_ptr<RtpProcessHelper> Ptr;
+    using Ptr = std::shared_ptr<RtpProcessHelper>;
     RtpProcessHelper(const std::string &stream_id, const std::weak_ptr<RtpSelector > &parent);
     ~RtpProcessHelper();
     void attachEvent();
@@ -43,6 +43,13 @@ class RtpSelector : public std::enable_shared_from_this<RtpSelector>{
 public:
     RtpSelector() = default;
     ~RtpSelector() = default;
+
+    class ProcessExisted : public std::runtime_error {
+    public:
+        template<typename ...T>
+        ProcessExisted(T && ...args) : std::runtime_error(std::forward<T>(args)...) {}
+        ~ProcessExisted() override = default;
+    };
 
     static bool getSSRC(const char *data,size_t data_len, uint32_t &ssrc);
     static RtpSelector &Instance();

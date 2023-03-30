@@ -10,6 +10,7 @@
 
 #include "Sdp.h"
 #include "Rtsp/Rtsp.h"
+#include "Common/config.h"
 #include <cinttypes>
 
 using namespace std;
@@ -23,7 +24,7 @@ const string kPreferredCodecA = RTC_FIELD"preferredCodecA";
 const string kPreferredCodecV = RTC_FIELD"preferredCodecV";
 static onceToken token([]() {
     mINI::Instance()[kPreferredCodecA] = "PCMU,PCMA,opus,mpeg4-generic";
-    mINI::Instance()[kPreferredCodecV] = "H264,H265,AV1X,VP9,VP8";
+    mINI::Instance()[kPreferredCodecV] = "H264,H265,AV1,VP9,VP8";
 });
 }
 
@@ -679,11 +680,11 @@ string SdpAttrSctpMap::toString() const  {
 void SdpAttrCandidate::parse(const string &str)  {
     char foundation_buf[40] = {0};
     char transport_buf[16] = {0};
-    char address_buf[32] = {0};
+    char address_buf[64] = {0};
     char type_buf[16] = {0};
 
     // https://datatracker.ietf.org/doc/html/rfc5245#section-15.1
-    CHECK_SDP(sscanf(str.data(), "%32[^ ] %" SCNu32 " %15[^ ] %" SCNu32 " %31[^ ] %" SCNu16 " typ %15[^ ]",
+    CHECK_SDP(sscanf(str.data(), "%32[^ ] %" SCNu32 " %15[^ ] %" SCNu32 " %63[^ ] %" SCNu16 " typ %15[^ ]",
             foundation_buf, &component, transport_buf, &priority, address_buf, &port, type_buf) == 7);
     foundation = foundation_buf;
     transport = transport_buf;
@@ -1063,6 +1064,9 @@ RtcSessionSdp::Ptr RtcSession::toRtcSessionSdp() const{
     }
     sdp.addAttr(std::make_shared<SdpAttrGroup>(group));
     sdp.addAttr(std::make_shared<SdpAttrMsidSemantic>(msid_semantic));
+
+    bool ice_lite = false;
+
     for (auto &m : media) {
         sdp.medias.emplace_back();
         auto &sdp_media = sdp.medias.back();
@@ -1098,6 +1102,7 @@ RtcSessionSdp::Ptr RtcSession::toRtcSessionSdp() const{
         sdp_media.addAttr(std::make_shared<SdpAttrMid>(m.mid));
         if (m.ice_lite) {
             sdp_media.addAttr(std::make_shared<SdpCommon>("ice-lite"));
+            ice_lite = true;
         }
         for (auto &ext : m.extmap) {
             sdp_media.addAttr(std::make_shared<SdpAttrExtmap>(ext));
@@ -1204,9 +1209,14 @@ RtcSessionSdp::Ptr RtcSession::toRtcSessionSdp() const{
         }
 
         for (auto &cand : m.candidate) {
-            sdp_media.addAttr(std::make_shared<SdpAttrCandidate>(cand));
+            if (cand.port) {
+                sdp_media.addAttr(std::make_shared<SdpAttrCandidate>(cand));
+            }
         }
     }
+    if(ice_lite)
+        sdp.addAttr(std::make_shared<SdpCommon>("ice-lite"));
+    
     return ret;
 }
 
@@ -1440,7 +1450,8 @@ void RtcConfigure::RtcTrackConfigure::setDefaultSetting(TrackType type){
                     {RtpExtType::color_space,                 RtpDirection::sendrecv},
                     {RtpExtType::video_content_type,          RtpDirection::sendrecv},
                     {RtpExtType::playout_delay,               RtpDirection::sendrecv},
-                    {RtpExtType::video_orientation,           RtpDirection::sendrecv},
+                    //手机端推webrtc 会带有旋转角度，rtc协议能正常播放 其他协议拉流画面旋转
+                    //{RtpExtType::video_orientation,           RtpDirection::sendrecv},
                     {RtpExtType::toffset,                     RtpDirection::sendrecv},
                     {RtpExtType::framemarking,                RtpDirection::sendrecv}
             };

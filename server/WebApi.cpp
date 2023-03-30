@@ -17,6 +17,7 @@
 #include "Util/logger.h"
 #include "Util/onceToken.h"
 #include "Util/NoticeCenter.h"
+#include "Util/File.h"
 #ifdef ENABLE_MYSQL
 #include "Util/SqlPool.h"
 #endif //ENABLE_MYSQL
@@ -344,7 +345,8 @@ Value makeMediaSourceJson(MediaSource &media){
     }
 
     //getLossRate有线程安全问题；使用getMediaInfo接口才能获取丢包率；getMediaList接口将忽略丢包率
-    auto current_thread = media.getOwnerPoller()->isCurrentThread();
+    auto current_thread = false;
+    try { current_thread = media.getOwnerPoller()->isCurrentThread();} catch (...) {}
     float last_loss = -1;
     for(auto &track : media.getTracks(false)){
         Value obj;
@@ -363,6 +365,7 @@ Value makeMediaSourceJson(MediaSource &media){
             }
             obj["loss"] = loss;
         }
+        obj["frames"] = track->getFrames();
         switch(codec_type){
             case TrackAudio : {
                 auto audio_track = dynamic_pointer_cast<AudioTrack>(track);
@@ -375,7 +378,16 @@ Value makeMediaSourceJson(MediaSource &media){
                 auto video_track = dynamic_pointer_cast<VideoTrack>(track);
                 obj["width"] = video_track->getVideoWidth();
                 obj["height"] = video_track->getVideoHeight();
-                obj["fps"] = round(video_track->getVideoFps());
+                obj["key_frames"] = video_track->getVideoKeyFrames();
+                int gop_size = video_track->getVideoGopSize();
+                int gop_interval_ms = video_track->getVideoGopInterval();
+                float fps = video_track->getVideoFps();
+                if (fps <= 1 && gop_interval_ms) {
+                    fps = gop_size * 1000.0 / gop_interval_ms;
+                }
+                obj["fps"] = round(fps);
+                obj["gop_size"] = gop_size;
+                obj["gop_interval_ms"] = gop_interval_ms;
                 break;
             }
             default:
@@ -387,7 +399,7 @@ Value makeMediaSourceJson(MediaSource &media){
 }
 
 #if defined(ENABLE_RTPPROXY)
-uint16_t openRtpServer(uint16_t local_port, const string &stream_id, int tcp_mode, const string &local_ip, bool re_use_port, uint32_t ssrc) {
+uint16_t openRtpServer(uint16_t local_port, const string &stream_id, int tcp_mode, const string &local_ip, bool re_use_port, uint32_t ssrc, bool only_audio) {
     lock_guard<recursive_mutex> lck(s_rtpServerMapMtx);
     if (s_rtpServerMap.find(stream_id) != s_rtpServerMap.end()) {
         //为了防止RtpProcess所有权限混乱的问题，不允许重复添加相同的stream_id
@@ -395,7 +407,7 @@ uint16_t openRtpServer(uint16_t local_port, const string &stream_id, int tcp_mod
     }
 
     RtpServer::Ptr server = std::make_shared<RtpServer>();
-    server->start(local_port, stream_id, (RtpServer::TcpMode)tcp_mode, local_ip.c_str(), re_use_port, ssrc);
+    server->start(local_port, stream_id, (RtpServer::TcpMode)tcp_mode, local_ip.c_str(), re_use_port, ssrc, only_audio);
     server->setOnDetach([stream_id]() {
         //设置rtp超时移除事件
         lock_guard<recursive_mutex> lck(s_rtpServerMapMtx);
@@ -525,7 +537,7 @@ void addStreamProxy(const string &vhost, const string &app, const string &stream
         return;
     }
     //添加拉流代理
-    auto player = std::make_shared<PlayerProxy>(vhost, app, stream, option, retry_count ? retry_count : -1);
+    auto player = std::make_shared<PlayerProxy>(vhost, app, stream, option, retry_count >=0 ? retry_count : -1);
     s_proxyMap[key] = player;
 
     //指定RTP over TCP(播放rtsp时有效)
@@ -854,7 +866,7 @@ void installWebApi() {
         val["count_closed"] = count_closed;
     });
 
-    //获取所有TcpSession列表信息
+    //获取所有Session列表信息
     //可以根据本地端口和远端ip来筛选
     //测试url(筛选某端口下的tcp会话) http://127.0.0.1/index/api/getAllSession?local_port=1935
     api_regist("/index/api/getAllSession",[](API_ARGS_MAP){
@@ -940,7 +952,7 @@ void installWebApi() {
         }
 
         //添加推流代理
-        PusherProxy::Ptr pusher(new PusherProxy(src, retry_count ? retry_count : -1));
+        PusherProxy::Ptr pusher(new PusherProxy(src, retry_count>=0 ? retry_count : -1));
         s_proxyPusherMap[key] = pusher;
 
         //指定RTP over TCP(播放rtsp时有效)
@@ -976,12 +988,13 @@ void installWebApi() {
         CHECK_SECRET();
         CHECK_ARGS("schema", "vhost", "app", "stream", "dst_url");
         auto dst_url = allArgs["dst_url"];
+	auto retry_count = allArgs["retry_count"].empty()? -1: allArgs["retry_count"].as<int>();
         addStreamPusherProxy(allArgs["schema"],
                              allArgs["vhost"],
                              allArgs["app"],
                              allArgs["stream"],
                              allArgs["dst_url"],
-                             allArgs["retry_count"],
+                             retry_count,
                              allArgs["rtp_type"],
                              allArgs["timeout_sec"],
                              [invoker, val, headerOut, dst_url](const SockException &ex, const string &key) mutable {
@@ -1012,12 +1025,12 @@ void installWebApi() {
         CHECK_ARGS("vhost","app","stream","url");
 
         ProtocolOption option(allArgs);
-
+        auto retry_count = allArgs["retry_count"].empty()? -1: allArgs["retry_count"].as<int>();
         addStreamProxy(allArgs["vhost"],
                        allArgs["app"],
                        allArgs["stream"],
                        allArgs["url"],
-                       allArgs["retry_count"],
+                       retry_count,
                        option,
                        allArgs["rtp_type"],
                        allArgs["timeout_sec"],
@@ -1136,7 +1149,7 @@ void installWebApi() {
             tcp_mode = 1;
         }
         auto port = openRtpServer(allArgs["port"], stream_id, tcp_mode, "::", allArgs["re_use_port"].as<bool>(),
-                                  allArgs["ssrc"].as<uint32_t>());
+                                  allArgs["ssrc"].as<uint32_t>(), allArgs["only_audio"].as<bool>());
         if (port == 0) {
             throw InvalidArgsException("该stream_id已存在");
         }
@@ -1201,6 +1214,7 @@ void installWebApi() {
         args.use_ps = allArgs["use_ps"].empty() ? true : allArgs["use_ps"].as<bool>();
         args.only_audio = allArgs["only_audio"].as<bool>();
         args.udp_rtcp_timeout = allArgs["udp_rtcp_timeout"];
+        args.recv_stream_id = allArgs["recv_stream_id"];
         TraceL << "startSendRtp, pt " << int(args.pt) << " ps " << args.use_ps << " audio " << args.only_audio;
 
         src->getOwnerPoller()->async([=]() mutable {
@@ -1232,6 +1246,9 @@ void installWebApi() {
         args.pt = allArgs["pt"].empty() ? 96 : allArgs["pt"].as<int>();
         args.use_ps = allArgs["use_ps"].empty() ? true : allArgs["use_ps"].as<bool>();
         args.only_audio = allArgs["only_audio"].as<bool>();
+        args.recv_stream_id = allArgs["recv_stream_id"];
+        //tcp被动服务器等待链接超时时间
+        args.tcp_passive_close_delay_ms = allArgs["close_delay_ms"];
         TraceL << "startSendRtpPassive, pt " << int(args.pt) << " ps " << args.use_ps << " audio " <<  args.only_audio;
 
         src->getOwnerPoller()->async([=]() mutable {
@@ -1760,6 +1777,11 @@ void installWebApi() {
 
     api_regist("/index/hook/on_server_keepalive",[](API_ARGS_JSON){
         //心跳hook
+    });
+
+    api_regist("/index/hook/on_rtp_server_timeout",[](API_ARGS_JSON){
+        //rtp server 超时
+        TraceL <<allArgs.getArgs().toStyledString();
     });
 }
 

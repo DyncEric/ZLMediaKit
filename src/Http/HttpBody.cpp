@@ -183,7 +183,7 @@ int HttpFileBody::sendFile(int fd) {
 
 class BufferMmap : public Buffer {
 public:
-    typedef std::shared_ptr<BufferMmap> Ptr;
+    using Ptr = std::shared_ptr<BufferMmap>;
     BufferMmap(const std::shared_ptr<char> &map_addr, size_t offset, size_t size) {
         _map_addr = map_addr;
         _data = map_addr.get() + offset;
@@ -289,11 +289,7 @@ Buffer::Ptr HttpMultiFormBody::readData(size_t size) {
 }
 
 string HttpMultiFormBody::multiFormBodySuffix(const string &boundary) {
-    string MPboundary = string("--") + boundary;
-    string endMPboundary = MPboundary + "--";
-    _StrPrinter body;
-    body << "\r\n" << endMPboundary;
-    return std::move(body);
+    return "\r\n--" + boundary + "--";
 }
 
 string HttpMultiFormBody::multiFormContentType(const string &boundary) {
@@ -311,7 +307,7 @@ string HttpMultiFormBody::multiFormBodyPrefix(const HttpArgs &args, const string
     body << MPboundary << "\r\n";
     body << "Content-Disposition: form-data; name=\""
          << "file"
-         << "\";filename=\"" << fileName << "\"\r\n";
+         << "\"; filename=\"" << fileName << "\"\r\n";
     body << "Content-Type: application/octet-stream\r\n\r\n";
     return std::move(body);
 }

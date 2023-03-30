@@ -15,6 +15,7 @@
 #include "Common/config.h"
 #include "MP4Recorder.h"
 #include "Thread/WorkThreadPool.h"
+#include "MP4Muxer.h"
 
 using namespace std;
 using namespace toolkit;
@@ -28,8 +29,8 @@ MP4Recorder::MP4Recorder(const string &path, const string &vhost, const string &
     _info.stream = stream_id;
     _info.vhost = vhost;
     _info.folder = path;
-    GET_CONFIG(size_t ,recordSec,Record::kFileSecond);
-    _max_second = max_second ? max_second : recordSec;
+    GET_CONFIG(uint32_t, s_max_second, Protocol::kMP4MaxSecond);
+    _max_second = max_second ? max_second : s_max_second;
 }
 
 MP4Recorder::~MP4Recorder() {

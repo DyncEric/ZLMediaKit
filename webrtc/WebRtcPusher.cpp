@@ -9,6 +9,7 @@
  */
 
 #include "WebRtcPusher.h"
+#include "Common/config.h"
 
 using namespace std;
 
@@ -18,8 +19,9 @@ WebRtcPusher::Ptr WebRtcPusher::create(const EventPoller::Ptr &poller,
                                        const RtspMediaSourceImp::Ptr &src,
                                        const std::shared_ptr<void> &ownership,
                                        const MediaInfo &info,
-                                       const ProtocolOption &option) {
-    WebRtcPusher::Ptr ret(new WebRtcPusher(poller, src, ownership, info, option), [](WebRtcPusher *ptr) {
+                                       const ProtocolOption &option,
+                                       bool preferred_tcp) {
+    WebRtcPusher::Ptr ret(new WebRtcPusher(poller, src, ownership, info, option,preferred_tcp), [](WebRtcPusher *ptr) {
         ptr->onDestory();
         delete ptr;
     });
@@ -31,7 +33,8 @@ WebRtcPusher::WebRtcPusher(const EventPoller::Ptr &poller,
                            const RtspMediaSourceImp::Ptr &src,
                            const std::shared_ptr<void> &ownership,
                            const MediaInfo &info,
-                           const ProtocolOption &option) : WebRtcTransportImp(poller) {
+                           const ProtocolOption &option,
+                           bool preferred_tcp) : WebRtcTransportImp(poller,preferred_tcp) {
     _media_info = info;
     _push_src = src;
     _push_src_ownership = ownership;
@@ -115,20 +118,15 @@ void WebRtcPusher::onStartWebRTC() {
 }
 
 void WebRtcPusher::onDestory() {
-    WebRtcTransportImp::onDestory();
-
     auto duration = getDuration();
     auto bytes_usage = getBytesUsage();
     //流量统计事件广播
     GET_CONFIG(uint32_t, iFlowThreshold, General::kFlowThreshold);
 
     if (getSession()) {
-        WarnL << "RTC推流器("
-              << _media_info.shortUrl()
-              << ")结束推流,耗时(s):" << duration;
+        WarnL << "RTC推流器(" << _media_info.shortUrl() << ")结束推流,耗时(s):" << duration;
         if (bytes_usage >= iFlowThreshold * 1024) {
-            NoticeCenter::Instance().emitEvent(Broadcast::kBroadcastFlowReport, _media_info, bytes_usage, duration,
-                                               false, static_cast<SockInfo &>(*getSession()));
+            NoticeCenter::Instance().emitEvent(Broadcast::kBroadcastFlowReport, _media_info, bytes_usage, duration, false, static_cast<SockInfo &>(*getSession()));
         }
     }
 
@@ -139,6 +137,7 @@ void WebRtcPusher::onDestory() {
         auto push_src = std::move(_push_src);
         getPoller()->doDelayTask(_continue_push_ms, [push_src]() { return 0; });
     }
+    WebRtcTransportImp::onDestory();
 }
 
 void WebRtcPusher::onRtcConfigure(RtcConfigure &configure) const {
@@ -158,7 +157,6 @@ void WebRtcPusher::OnDtlsTransportClosed(const RTC::DtlsTransport *dtlsTransport
 }
 
 void WebRtcPusher::onRtcpBye(){
-    _push_src = nullptr;
      WebRtcTransportImp::onRtcpBye();
 }
 

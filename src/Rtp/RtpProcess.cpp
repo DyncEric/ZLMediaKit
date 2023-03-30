@@ -12,6 +12,8 @@
 #include "GB28181Process.h"
 #include "RtpProcess.h"
 #include "Http/HttpTSPlayer.h"
+#include "Util/File.h"
+#include "Common/config.h"
 
 using namespace std;
 using namespace toolkit;
@@ -69,6 +71,10 @@ RtpProcess::~RtpProcess() {
 }
 
 bool RtpProcess::inputRtp(bool is_udp, const Socket::Ptr &sock, const char *data, size_t len, const struct sockaddr *addr, uint64_t *dts_out) {
+    if (!isRtp(data, len)) {
+        WarnP(this) << "Not rtp packet";
+        return false;
+    }
     if (_sock != sock) {
         // 第一次运行本函数
         bool first = !_sock;
@@ -185,6 +191,10 @@ void RtpProcess::setStopCheckRtp(bool is_check){
     }
 }
 
+void RtpProcess::setOnlyAudio(bool only_audio){
+    _only_audio = only_audio;
+}
+
 void RtpProcess::onDetach() {
     if (_on_detach) {
         _on_detach();
@@ -245,6 +255,9 @@ void RtpProcess::emitOnPublish() {
                                                                               strong_self->_media_info._app,
                                                                               strong_self->_media_info._streamid,0.0f,
                                                                               option);
+                if (strong_self->_only_audio) {
+                    strong_self->_muxer->setOnlyAudio();
+                }
                 strong_self->_muxer->setMediaListener(strong_self);
                 strong_self->doCachedFunc();
                 InfoP(strong_self) << "允许RTP推流";

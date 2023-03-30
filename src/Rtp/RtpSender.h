@@ -14,13 +14,17 @@
 #include "PSEncoder.h"
 #include "Extension/CommonRtp.h"
 #include "Rtcp/RtcpContext.h"
+#include "Common/MediaSource.h"
+#include "Common/MediaSink.h"
 
 namespace mediakit{
+
+class RtpSession;
 
 //rtp发送客户端，支持发送GB28181协议
 class RtpSender final : public MediaSinkInterface, public std::enable_shared_from_this<RtpSender>{
 public:
-    typedef std::shared_ptr<RtpSender> Ptr;
+    using Ptr = std::shared_ptr<RtpSender>;
 
     RtpSender(toolkit::EventPoller::Ptr poller = nullptr);
     ~RtpSender() override;
@@ -83,6 +87,7 @@ private:
     std::shared_ptr<RtcpContext> _rtcp_context;
     toolkit::Ticker _rtcp_send_ticker;
     toolkit::Ticker _rtcp_recv_ticker;
+    std::shared_ptr<RtpSession> _rtp_session;
     std::function<void(const toolkit::SockException &ex)> _on_close;
 };
 

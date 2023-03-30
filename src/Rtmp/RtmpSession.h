@@ -15,17 +15,14 @@
 #include "amf.h"
 #include "Rtmp.h"
 #include "utils.h"
-#include "Common/config.h"
 #include "RtmpProtocol.h"
 #include "RtmpMediaSourceImp.h"
-#include "Util/util.h"
 #include "Util/TimeTicker.h"
-#include "Network/TcpSession.h"
-#include "Common/Stamp.h"
+#include "Network/Session.h"
 
 namespace mediakit {
 
-class RtmpSession : public toolkit::TcpSession, public RtmpProtocol, public MediaSourceEvent {
+class RtmpSession : public toolkit::Session, public RtmpProtocol, public MediaSourceEvent {
 public:
     using Ptr = std::shared_ptr<RtmpSession>;
 
@@ -96,8 +93,6 @@ private:
     //消耗的总流量
     uint64_t _total_bytes = 0;
     std::string _tc_url;
-    //推流时间戳修整器
-    Stamp _stamp[2];
     //数据接收超时计时器
     toolkit::Ticker _ticker;
     MediaInfo _media_info;
@@ -111,7 +106,7 @@ private:
 /**
  * 支持ssl加密的rtmp服务器
  */
-using RtmpSessionWithSSL = toolkit::TcpSessionWithSSL<RtmpSession>;
+using RtmpSessionWithSSL = toolkit::SessionWithSSL<RtmpSession>;
 
 } /* namespace mediakit */
 #endif /* SRC_RTMP_RTMPSESSION_H_ */

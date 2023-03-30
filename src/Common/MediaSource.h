@@ -11,15 +11,10 @@
 #ifndef ZLMEDIAKIT_MEDIASOURCE_H
 #define ZLMEDIAKIT_MEDIASOURCE_H
 
-#include <mutex>
 #include <string>
 #include <atomic>
 #include <memory>
 #include <functional>
-#include <unordered_map>
-#include "Common/config.h"
-#include "Common/Parser.h"
-#include "Util/List.h"
 #include "Network/Socket.h"
 #include "Extension/Track.h"
 #include "Record/Recorder.h"
@@ -57,8 +52,8 @@ public:
         ~NotImplemented() override = default;
     };
 
-    MediaSourceEvent() {};
-    virtual ~MediaSourceEvent() {};
+    MediaSourceEvent() = default;
+    virtual ~MediaSourceEvent() = default;
 
     // 获取媒体源类型
     virtual MediaOriginType getOriginType(MediaSource &sender) const { return MediaOriginType::unknown; }
@@ -117,12 +112,15 @@ public:
 
         //udp发送时，是否开启rr rtcp接收超时判断
         bool udp_rtcp_timeout = false;
-        //tcp被动发送服务器延时关闭事件，单位毫秒
-        uint32_t tcp_passive_close_delay_ms = 5 * 1000;
+        //tcp被动发送服务器延时关闭事件，单位毫秒；设置为0时，则使用默认值5000ms
+        uint32_t tcp_passive_close_delay_ms = 0;
         //udp 发送时，rr rtcp包接收超时时间，单位毫秒
         uint32_t rtcp_timeout_ms = 30 * 1000;
         //udp 发送时，发送sr rtcp包间隔，单位毫秒
         uint32_t rtcp_send_interval_ms = 5 * 1000;
+
+        //发送rtp同时接收，一般用于双向语言对讲, 如果不为空，说明开启接收
+        std::string recv_stream_id;
     };
 
     // 开始发送ps-rtp
@@ -132,6 +130,91 @@ public:
 
 private:
     toolkit::Timer::Ptr _async_close_timer;
+};
+
+class ProtocolOption {
+public:
+    ProtocolOption();
+
+    //时间戳修复这一路流标志位
+    bool modify_stamp;
+    //转协议是否开启音频
+    bool enable_audio;
+    //添加静音音频，在关闭音频时，此开关无效
+    bool add_mute_audio;
+    //断连续推延时，单位毫秒，默认采用配置文件
+    uint32_t continue_push_ms;
+
+    //是否开启转换为hls
+    bool enable_hls;
+    //是否开启MP4录制
+    bool enable_mp4;
+    //是否开启转换为rtsp/webrtc
+    bool enable_rtsp;
+    //是否开启转换为rtmp/flv
+    bool enable_rtmp;
+    //是否开启转换为http-ts/ws-ts
+    bool enable_ts;
+    //是否开启转换为http-fmp4/ws-fmp4
+    bool enable_fmp4;
+
+    // hls协议是否按需生成，如果hls.segNum配置为0(意味着hls录制)，那么hls将一直生成(不管此开关)
+    bool hls_demand;
+    // rtsp[s]协议是否按需生成
+    bool rtsp_demand;
+    // rtmp[s]、http[s]-flv、ws[s]-flv协议是否按需生成
+    bool rtmp_demand;
+    // http[s]-ts协议是否按需生成
+    bool ts_demand;
+    // http[s]-fmp4、ws[s]-fmp4协议是否按需生成
+    bool fmp4_demand;
+
+    //是否将mp4录制当做观看者
+    bool mp4_as_player;
+    //mp4切片大小，单位秒
+    size_t mp4_max_second;
+    //mp4录制保存路径
+    std::string mp4_save_path;
+
+    //hls录制保存路径
+    std::string hls_save_path;
+
+    template <typename MAP>
+    ProtocolOption(const MAP &allArgs) : ProtocolOption() {
+#define GET_OPT_VALUE(key) getArgsValue(allArgs, #key, key)
+        GET_OPT_VALUE(modify_stamp);
+        GET_OPT_VALUE(enable_audio);
+        GET_OPT_VALUE(add_mute_audio);
+        GET_OPT_VALUE(continue_push_ms);
+
+        GET_OPT_VALUE(enable_hls);
+        GET_OPT_VALUE(enable_mp4);
+        GET_OPT_VALUE(enable_rtsp);
+        GET_OPT_VALUE(enable_rtmp);
+        GET_OPT_VALUE(enable_ts);
+        GET_OPT_VALUE(enable_fmp4);
+
+        GET_OPT_VALUE(hls_demand);
+        GET_OPT_VALUE(rtsp_demand);
+        GET_OPT_VALUE(rtmp_demand);
+        GET_OPT_VALUE(ts_demand);
+        GET_OPT_VALUE(fmp4_demand);
+
+        GET_OPT_VALUE(mp4_max_second);
+        GET_OPT_VALUE(mp4_as_player);
+        GET_OPT_VALUE(mp4_save_path);
+
+        GET_OPT_VALUE(hls_save_path);
+    }
+
+private:
+    template <typename MAP, typename KEY, typename TYPE>
+    static void getArgsValue(const MAP &allArgs, const KEY &key, TYPE &value) {
+        auto val = ((MAP &)allArgs)[key];
+        if (!val.empty()) {
+            value = (TYPE)val;
+        }
+    }
 };
 
 //该对象用于拦截感兴趣的MediaSourceEvent事件
@@ -323,85 +406,6 @@ private:
     std::weak_ptr<MediaSourceEvent> _listener;
     // 对象个数统计
     toolkit::ObjectStatistic<MediaSource> _statistic;
-};
-
-/// 缓存刷新策略类
-class FlushPolicy {
-public:
-    FlushPolicy() = default;
-    ~FlushPolicy() = default;
-
-    bool isFlushAble(bool is_video, bool is_key, uint64_t new_stamp, size_t cache_size);
-
-private:
-    // 音视频的最后时间戳
-    uint64_t _last_stamp[2] = { 0, 0 };
-};
-
-/// 合并写缓存模板
-/// \tparam packet 包类型
-/// \tparam policy 刷新缓存策略
-/// \tparam packet_list 包缓存类型
-template<typename packet, typename policy = FlushPolicy, typename packet_list = toolkit::List<std::shared_ptr<packet> > >
-class PacketCache {
-public:
-    PacketCache() { _cache = std::make_shared<packet_list>(); }
-
-    virtual ~PacketCache() = default;
-
-    void inputPacket(uint64_t stamp, bool is_video, std::shared_ptr<packet> pkt, bool key_pos) {
-        bool flag = flushImmediatelyWhenCloseMerge();
-        if (!flag && _policy.isFlushAble(is_video, key_pos, stamp, _cache->size())) {
-            flush();
-        }
-
-        //追加数据到最后
-        _cache->emplace_back(std::move(pkt));
-        if (key_pos) {
-            _key_pos = key_pos;
-        }
-
-        if (flag) {
-            flush();
-        }
-    }
-
-    void flush() {
-        if (_cache->empty()) {
-            return;
-        }
-        onFlush(std::move(_cache), _key_pos);
-        _cache = std::make_shared<packet_list>();
-        _key_pos = false;
-    }
-
-    virtual void clearCache() {
-        _cache->clear();
-    }
-
-    virtual void onFlush(std::shared_ptr<packet_list>, bool key_pos) = 0;
-
-private:
-    bool flushImmediatelyWhenCloseMerge() {
-        // 一般的协议关闭合并写时，立即刷新缓存，这样可以减少一帧的延时，但是rtp例外
-        // 因为rtp的包很小，一个RtpPacket包中也不是完整的一帧图像，所以在关闭合并写时，
-        // 还是有必要缓冲一帧的rtp(也就是时间戳相同的rtp)再输出，这样虽然会增加一帧的延时
-        // 但是却对性能提升很大，这样做还是比较划算的
-
-        GET_CONFIG(int, mergeWriteMS, General::kMergeWriteMS);
-
-        GET_CONFIG(int, rtspLowLatency, Rtsp::kLowLatency);
-        if (std::is_same<packet, RtpPacket>::value && rtspLowLatency) {
-            return true;
-        }
-
-        return std::is_same<packet, RtpPacket>::value ? false : (mergeWriteMS <= 0);
-    }
-
-private:
-    bool _key_pos = false;
-    policy _policy;
-    std::shared_ptr<packet_list> _cache;
 };
 
 } /* namespace mediakit */

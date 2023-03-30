@@ -15,6 +15,8 @@
 #include "RtspSession.h"
 #include "Util/MD5.h"
 #include "Util/base64.h"
+#include "RtpMultiCaster.h"
+#include "Rtcp/RtcpContext.h"
 
 using namespace std;
 using namespace toolkit;
@@ -49,7 +51,7 @@ static unordered_map<string, weak_ptr<RtspSession> > g_mapGetter;
 //对g_mapGetter上锁保护
 static recursive_mutex g_mtxGetter;
 
-RtspSession::RtspSession(const Socket::Ptr &sock) : TcpSession(sock) {
+RtspSession::RtspSession(const Socket::Ptr &sock) : Session(sock) {
     DebugP(this);
     GET_CONFIG(uint32_t,keep_alive_sec,Rtsp::kKeepAliveSecond);
     sock->setSendTimeOutSecond(keep_alive_sec);
@@ -305,7 +307,7 @@ void RtspSession::handleReq_ANNOUNCE(const Parser &parser) {
 void RtspSession::handleReq_RECORD(const Parser &parser){
     if (_sdp_track.empty() || parser["Session"] != _sessionid) {
         send_SessionNotFound();
-        throw SockException(Err_shutdown, _sdp_track.empty() ? "can not find any availabe track when record" : "session not found when record");
+        throw SockException(Err_shutdown, _sdp_track.empty() ? "can not find any available track when record" : "session not found when record");
     }
 
     _StrPrinter rtp_info;
@@ -448,31 +450,26 @@ void RtspSession::onAuthSuccess() {
 }
 
 void RtspSession::onAuthFailed(const string &realm,const string &why,bool close) {
-    GET_CONFIG(bool,authBasic,Rtsp::kAuthBasic);
+    GET_CONFIG(bool, authBasic, Rtsp::kAuthBasic);
     if (!authBasic) {
-        //我们需要客户端优先以md5方式认证
+        // 我们需要客户端优先以md5方式认证
         _auth_nonce = makeRandStr(32);
-        sendRtspResponse("401 Unauthorized",
-                         {"WWW-Authenticate",
-                          StrPrinter << "Digest realm=\"" << realm << "\",nonce=\"" << _auth_nonce << "\"" });
-    }else {
-        //当然我们也支持base64认证,但是我们不建议这样做
-        sendRtspResponse("401 Unauthorized",
-                         {"WWW-Authenticate",
-                          StrPrinter << "Basic realm=\"" << realm << "\"" });
+        sendRtspResponse("401 Unauthorized", { "WWW-Authenticate", StrPrinter << "Digest realm=\"" << realm << "\",nonce=\"" << _auth_nonce << "\"" });
+    } else {
+        // 当然我们也支持base64认证,但是我们不建议这样做
+        sendRtspResponse("401 Unauthorized", { "WWW-Authenticate", StrPrinter << "Basic realm=\"" << realm << "\"" });
     }
-    if(close){
-        shutdown(SockException(Err_shutdown,StrPrinter << "401 Unauthorized:" << why));
+    if (close) {
+        shutdown(SockException(Err_shutdown, StrPrinter << "401 Unauthorized:" << why));
     }
 }
 
-void RtspSession::onAuthBasic(const string &realm,const string &auth_base64){
+void RtspSession::onAuthBasic(const string &realm, const string &auth_base64) {
     //base64认证
-    char user_pwd_buf[512];
-    av_base64_decode((uint8_t *) user_pwd_buf, auth_base64.data(), (int)auth_base64.size());
-    auto user_pwd_vec = split(user_pwd_buf, ":");
+    auto user_passwd = decodeBase64(auth_base64);
+    auto user_pwd_vec = split(user_passwd, ":");
     if (user_pwd_vec.size() < 2) {
-        //认证信息格式不合法，回复401 Unauthorized
+        // 认证信息格式不合法，回复401 Unauthorized
         onAuthFailed(realm, "can not find user and passwd when basic64 auth");
         return;
     }
@@ -724,7 +721,7 @@ void RtspSession::handleReq_Setup(const Parser &parser) {
         break;
     case Rtsp::RTP_MULTICAST: {
         if(!_multicaster){
-            _multicaster = RtpMultiCaster::get(*this, get_local_ip(), _media_info._vhost, _media_info._app, _media_info._streamid);
+            _multicaster = RtpMultiCaster::get(*this, get_local_ip(), _media_info._vhost, _media_info._app, _media_info._streamid, _multicast_ip, _multicast_video_port, _multicast_audio_port);
             if (!_multicaster) {
                 send_NotAcceptable();
                 throw SockException(Err_shutdown, "can not get a available udp multicast socket");
@@ -1083,7 +1080,7 @@ ssize_t RtspSession::send(Buffer::Ptr pkt){
 //		DebugP(this) << pkt->data();
 //	}
     _bytes_usage += pkt->size();
-    return TcpSession::send(std::move(pkt));
+    return Session::send(std::move(pkt));
 }
 
 bool RtspSession::sendRtspResponse(const string &res_code, const std::initializer_list<string> &header, const string &sdp, const char *protocol) {

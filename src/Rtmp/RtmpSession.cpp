@@ -17,7 +17,7 @@ using namespace toolkit;
 
 namespace mediakit {
 
-RtmpSession::RtmpSession(const Socket::Ptr &sock) : TcpSession(sock) {
+RtmpSession::RtmpSession(const Socket::Ptr &sock) : Session(sock) {
     DebugP(this);
     GET_CONFIG(uint32_t,keep_alive_sec,Rtmp::kKeepAliveSecond);
     sock->setSendTimeOutSecond(keep_alive_sec);
@@ -95,6 +95,15 @@ void RtmpSession::onCmd_connect(AMFDecoder &dec) {
             //tc_url 中可能包含?以及参数，参见issue: #692
             _tc_url = _tc_url.substr(0, pos);
         }
+        auto stream_start = _tc_url.rfind('/');
+        if (stream_start != string::npos && stream_start > 1) {
+            auto protocol_end = _tc_url.find("://") + 2;
+            auto app_start = _tc_url.rfind('/', stream_start - 1);
+            if (app_start != protocol_end) {
+                // contain stream name part
+                _tc_url = _tc_url.substr(0, stream_start);
+            }
+        }
     }
     bool ok = true; //(app == APP_NAME);
     AMFValue version(AMF_OBJECT);
@@ -122,9 +131,9 @@ void RtmpSession::onCmd_createStream(AMFDecoder &dec) {
 void RtmpSession::onCmd_publish(AMFDecoder &dec) {
     std::shared_ptr<Ticker> ticker(new Ticker);
     weak_ptr<RtmpSession> weak_self = dynamic_pointer_cast<RtmpSession>(shared_from_this());
-    std::shared_ptr<onceToken> pToken(new onceToken(nullptr,[ticker,weak_self](){
+    std::shared_ptr<onceToken> token(new onceToken(nullptr, [ticker, weak_self]() {
         auto strong_self = weak_self.lock();
-        if(strong_self){
+        if (strong_self) {
             DebugP(strong_self.get()) << "publish 回复时间:" << ticker->elapsedTime() << "ms";
         }
     }));
@@ -132,7 +141,9 @@ void RtmpSession::onCmd_publish(AMFDecoder &dec) {
     _media_info.parse(_tc_url + "/" + getStreamId(dec.load<std::string>()));
     _media_info._schema = RTMP_SCHEMA;
 
-    auto on_res = [this, pToken](const string &err, const ProtocolOption &option) {
+    auto now_stream_index = _now_stream_index;
+    auto on_res = [this, token, now_stream_index](const string &err, const ProtocolOption &option) {
+        _now_stream_index = now_stream_index;
         if (!err.empty()) {
             sendStatus({ "level", "error",
                          "code", "NetStream.Publish.BadAuth",
@@ -196,12 +207,12 @@ void RtmpSession::onCmd_publish(AMFDecoder &dec) {
         return;
     }
 
-    Broadcast::PublishAuthInvoker invoker = [weak_self, on_res, pToken](const string &err, const ProtocolOption &option) {
+    Broadcast::PublishAuthInvoker invoker = [weak_self, on_res, token](const string &err, const ProtocolOption &option) {
         auto strong_self = weak_self.lock();
         if (!strong_self) {
             return;
         }
-        strong_self->async([weak_self, on_res, err, pToken, option]() {
+        strong_self->async([weak_self, on_res, err, token, option]() {
             auto strong_self = weak_self.lock();
             if (!strong_self) {
                 return;
@@ -361,24 +372,26 @@ void RtmpSession::doPlay(AMFDecoder &dec){
             DebugP(strong_self.get()) << "play 回复时间:" << ticker->elapsedTime() << "ms";
         }
     }));
-    Broadcast::AuthInvoker invoker = [weak_self,token](const string &err){
+    auto now_stream_index = _now_stream_index;
+    Broadcast::AuthInvoker invoker = [weak_self, token, now_stream_index](const string &err) {
         auto strong_self = weak_self.lock();
         if (!strong_self) {
             return;
         }
-        strong_self->async([weak_self, err, token]() {
+        strong_self->async([weak_self, err, token, now_stream_index]() {
             auto strong_self = weak_self.lock();
             if (!strong_self) {
                 return;
             }
+            strong_self->_now_stream_index = now_stream_index;
             strong_self->doPlayResponse(err, [token](bool) {});
         });
     };
 
     auto flag = NoticeCenter::Instance().emitEvent(Broadcast::kBroadcastMediaPlayed, _media_info, invoker, static_cast<SockInfo &>(*this));
-    if(!flag){
-        //该事件无人监听,默认不鉴权
-        doPlayResponse("",[token](bool){});
+    if (!flag) {
+        // 该事件无人监听,默认不鉴权
+        doPlayResponse("", [token](bool) {});
     }
 }
 
@@ -529,12 +542,6 @@ void RtmpSession::onRtmpChunk(RtmpPacket::Ptr packet) {
         if (!_push_src) {
             WarnL << "Not a rtmp push!";
             return;
-        }
-        GET_CONFIG(bool, rtmp_modify_stamp, Rtmp::kModifyStamp);
-        if (rtmp_modify_stamp) {
-            int64_t dts_out;
-            _stamp[chunk_data.type_id % 2].revise(chunk_data.time_stamp, chunk_data.time_stamp, dts_out, dts_out, true);
-            chunk_data.time_stamp = (uint32_t)dts_out;
         }
 
         if (!_set_meta_data) {
