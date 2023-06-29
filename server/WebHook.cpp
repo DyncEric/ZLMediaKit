@@ -44,6 +44,7 @@ const string kOnShellLogin = HOOK_FIELD "on_shell_login";
 const string kOnStreamNoneReader = HOOK_FIELD "on_stream_none_reader";
 const string kOnHttpAccess = HOOK_FIELD "on_http_access";
 const string kOnServerStarted = HOOK_FIELD "on_server_started";
+const string kOnServerExited = HOOK_FIELD "on_server_exited";
 const string kOnServerKeepalive = HOOK_FIELD "on_server_keepalive";
 const string kOnSendRtpStopped = HOOK_FIELD "on_send_rtp_stopped";
 const string kOnRtpServerTimeout = HOOK_FIELD "on_rtp_server_timeout";
@@ -69,6 +70,7 @@ static onceToken token([]() {
     mINI::Instance()[kOnStreamNoneReader] = "";
     mINI::Instance()[kOnHttpAccess] = "";
     mINI::Instance()[kOnServerStarted] = "";
+    mINI::Instance()[kOnServerExited] = "";
     mINI::Instance()[kOnServerKeepalive] = "";
     mINI::Instance()[kOnSendRtpStopped] = "";
     mINI::Instance()[kOnRtpServerTimeout] = "";
@@ -100,14 +102,14 @@ static void parse_http_response(const SockException &ex, const Parser &res, cons
         fun(Json::nullValue, errStr, should_retry);
         return;
     }
-    if (res.Url() != "200") {
-        auto errStr = StrPrinter << "[bad http status code]:" << res.Url() << endl;
+    if (res.status() != "200") {
+        auto errStr = StrPrinter << "[bad http status code]:" << res.status() << endl;
         fun(Json::nullValue, errStr, should_retry);
         return;
     }
     Value result;
     try {
-        stringstream ss(res.Content());
+        stringstream ss(res.content());
         ss >> result;
     } catch (std::exception &ex) {
         auto errStr = StrPrinter << "[parse json failed]:" << ex.what() << endl;
@@ -213,12 +215,12 @@ void do_http_hook(const string &url, const ArgsType &body, const function<void(c
     do_http_hook(url, body, func, hook_retry);
 }
 
+void dumpMediaTuple(const MediaTuple &tuple, Json::Value& item);
+
 static ArgsType make_json(const MediaInfo &args) {
     ArgsType body;
     body["schema"] = args.schema;
-    body[VHOST_KEY] = args.vhost;
-    body["app"] = args.app;
-    body["stream"] = args.stream;
+    dumpMediaTuple(args, body);
     body["params"] = args.param_strs;
     return body;
 }
@@ -236,6 +238,18 @@ static void reportServerStarted() {
     }
     // 执行hook
     do_http_hook(hook_server_started, body, nullptr);
+}
+
+static void reportServerExited() {
+    GET_CONFIG(bool, hook_enable, Hook::kEnable);
+    GET_CONFIG(string, hook_server_exited, Hook::kOnServerExited);
+    if (!hook_enable || hook_server_exited.empty()) {
+        return;
+    }
+
+    const ArgsType body;
+    // 执行hook
+    do_http_hook(hook_server_exited, body, nullptr);
 }
 
 // 服务器定时保活定时器
@@ -437,9 +451,7 @@ void installWebHook() {
             body["regist"] = bRegist;
         } else {
             body["schema"] = sender.getSchema();
-            body[VHOST_KEY] = sender.getVhost();
-            body["app"] = sender.getApp();
-            body["stream"] = sender.getId();
+            dumpMediaTuple(sender.getMediaTuple(), body);
             body["regist"] = bRegist;
         }
         // 执行hook
@@ -503,9 +515,7 @@ void installWebHook() {
         body["file_name"] = info.file_name;
         body["folder"] = info.folder;
         body["url"] = info.url;
-        body["app"] = info.app;
-        body["stream"] = info.stream;
-        body[VHOST_KEY] = info.vhost;
+        dumpMediaTuple(info, body);
         return body;
     };
 
@@ -561,9 +571,7 @@ void installWebHook() {
 
         ArgsType body;
         body["schema"] = sender.getSchema();
-        body[VHOST_KEY] = sender.getVhost();
-        body["app"] = sender.getApp();
-        body["stream"] = sender.getId();
+        dumpMediaTuple(sender.getMediaTuple(), body);
         weak_ptr<MediaSource> weakSrc = sender.shared_from_this();
         // 执行hook
         do_http_hook(hook_stream_none_reader, body, [weakSrc](const Value &obj, const string &err) {
@@ -584,9 +592,7 @@ void installWebHook() {
         }
 
         ArgsType body;
-        body[VHOST_KEY] = sender.getVhost();
-        body["app"] = sender.getApp();
-        body["stream"] = sender.getStreamId();
+        dumpMediaTuple(sender.getMediaTuple(), body);
         body["ssrc"] = ssrc;
         body["originType"] = (int)sender.getOriginType(MediaSource::NullMediaSource());
         body["originTypeStr"] = getOriginTypeString(sender.getOriginType(MediaSource::NullMediaSource()));
@@ -614,7 +620,7 @@ void installWebHook() {
     // 追踪用户的目的是为了缓存上次鉴权结果，减少鉴权次数，提高性能
     NoticeCenter::Instance().addListener(&web_hook_tag, Broadcast::kBroadcastHttpAccess, [](BroadcastHttpAccessArgs) {
         GET_CONFIG(string, hook_http_access, Hook::kOnHttpAccess);
-        if (sender.get_peer_ip() == "127.0.0.1" || parser.Params() == hook_adminparams) {
+        if (sender.get_peer_ip() == "127.0.0.1" || parser.params() == hook_adminparams) {
             // 如果是本机或超级管理员访问，那么不做访问鉴权；权限有效期1个小时
             invoker("", "", 60 * 60);
             return;
@@ -632,7 +638,7 @@ void installWebHook() {
         body["id"] = sender.getIdentifier();
         body["path"] = path;
         body["is_dir"] = is_dir;
-        body["params"] = parser.Params();
+        body["params"] = parser.params();
         for (auto &pr : parser.getHeader()) {
             body[string("header.") + pr.first] = pr.second;
         }
@@ -675,4 +681,8 @@ void installWebHook() {
 void unInstallWebHook() {
     g_keepalive_timer.reset();
     NoticeCenter::Instance().delListener(&web_hook_tag);
+}
+
+void onProcessExited() {
+    reportServerExited();
 }

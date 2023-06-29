@@ -39,7 +39,7 @@ onceToken token([]() {
     //ffmpeg日志保存路径
     mINI::Instance()[kLog] = "./ffmpeg/ffmpeg.log";
     mINI::Instance()[kCmd] = "%s -re -i %s -c:a aac -strict -2 -ar 44100 -ab 48k -c:v libx264 -f flv %s";
-    mINI::Instance()[kSnap] = "%s -i %s -y -f mjpeg -t 0.001 %s";
+    mINI::Instance()[kSnap] = "%s -i %s -y -f mjpeg -frames:v 1 %s";
     mINI::Instance()[kRestartSec] = 0;
 });
 }
@@ -184,9 +184,7 @@ void FFmpegSource::findAsync(int maxWaitMS, const function<void(const MediaSourc
 
         if (!bRegist ||
             sender.getSchema() != strongSelf->_media_info.schema ||
-            sender.getVhost() != strongSelf->_media_info.vhost ||
-            sender.getApp() != strongSelf->_media_info.app ||
-            sender.getId() != strongSelf->_media_info.stream) {
+            !equalMediaTuple(sender.getMediaTuple(), strongSelf->_media_info)) {
             //不是自己感兴趣的事件，忽略之
             return;
         }
