@@ -18,13 +18,6 @@
 #include "Network/Buffer.h"
 #include "Extension/Track.h"
 
-#if !defined(_WIN32)
-#define PACKED	__attribute__((packed))
-#else
-#define PACKED
-#endif //!defined(_WIN32)
-
-
 #define DEFAULT_CHUNK_LEN	128
 #define HANDSHAKE_PLAINTEXT	0x03
 #define RANDOM_LEN		(1536 - 8)
@@ -65,9 +58,7 @@
 
 namespace mediakit {
 
-#if defined(_WIN32)
 #pragma pack(push, 1)
-#endif // defined(_WIN32)
 
 class RtmpHandshake {
 public:
@@ -81,7 +72,7 @@ public:
 
     void create_complex_c0c1();
 
-}PACKED;
+};
 
 class RtmpHeader {
 public:
@@ -97,7 +88,7 @@ public:
     uint8_t body_size[3];
     uint8_t type_id;
     uint8_t stream_index[4]; /* Note, this is little-endian while others are BE */
-}PACKED;
+};
 
 class FLVHeader {
 public:
@@ -130,7 +121,7 @@ public:
     uint32_t length;
     //固定为0
     uint32_t previous_tag_size0;
-} PACKED;
+};
 
 class RtmpTagHeader {
 public:
@@ -139,11 +130,9 @@ public:
     uint8_t timestamp[3] = {0};
     uint8_t timestamp_ex = 0;
     uint8_t streamid[3] = {0}; /* Always 0. */
-} PACKED;
+};
 
-#if defined(_WIN32)
 #pragma pack(pop)
-#endif // defined(_WIN32)
 
 class RtmpPacket : public toolkit::Buffer{
 public:
@@ -274,8 +263,10 @@ enum class RtmpFrameType : uint8_t {
     video_info_frame = 5, // video info/command frame
 };
 
+#define MKBETAG(a, b, c, d) ((d) | ((c) << 8) | ((b) << 16) | ((unsigned)(a) << 24))
+
 // UB [4]; Codec Identifier.
-enum class RtmpVideoCodec : uint8_t {
+enum class RtmpVideoCodec : uint32_t {
     h263 = 2, // Sorenson H.263
     screen_video = 3, // Screen video
     vp6 = 4, // On2 VP6
@@ -283,6 +274,11 @@ enum class RtmpVideoCodec : uint8_t {
     screen_video2 = 6, // Screen video version 2
     h264 = 7, // avc
     h265 = 12, // 国内扩展
+
+    // 增强型rtmp FourCC
+    fourcc_vp9 = MKBETAG('v', 'p', '0', '9'),
+    fourcc_av1 = MKBETAG('a', 'v', '0', '1'),
+    fourcc_hevc = MKBETAG('h', 'v', 'c', '1')
 };
 
 // UI8;
