@@ -99,11 +99,13 @@ public:
         // rtp采用ps还是es方式
         bool use_ps = true;
         //发送es流时指定是否只发送纯音频流
-        bool only_audio = true;
+        bool only_audio = false;
         //tcp被动方式
         bool passive = false;
         // rtp payload type
         uint8_t pt = 96;
+        //是否支持同ssrc多服务器发送
+        bool ssrc_multi_send = false;
         // 指定rtp ssrc
         std::string ssrc;
         // 指定本地发送端口
@@ -347,11 +349,13 @@ public:
     // 观看者个数，包括(hls/rtsp/rtmp)
     virtual int totalReaderCount();
     // 获取播放器列表
-    virtual void getPlayerList(const std::function<void(const std::list<std::shared_ptr<void>> &info_list)> &cb,
-                               const std::function<std::shared_ptr<void>(std::shared_ptr<void> &&info)> &on_change) {
+    virtual void getPlayerList(const std::function<void(const std::list<toolkit::Any> &info_list)> &cb,
+                               const std::function<toolkit::Any(toolkit::Any &&info)> &on_change) {
         assert(cb);
-        cb(std::list<std::shared_ptr<void>>());
+        cb(std::list<toolkit::Any>());
     }
+
+    virtual bool broadcastMessage(const toolkit::Any &data) { return false; }
 
     // 获取媒体源类型
     MediaOriginType getOriginType() const;

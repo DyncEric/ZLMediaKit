@@ -214,6 +214,16 @@ API_EXPORT mk_track API_CALL mk_media_source_get_track(const mk_media_source ctx
     return (mk_track) new Track::Ptr(std::move(tracks[index]));
 }
 
+API_EXPORT int API_CALL mk_media_source_broadcast_msg(const mk_media_source ctx, const char *msg, size_t len) {
+    assert(ctx && msg && len);
+    MediaSource *src = (MediaSource *)ctx;
+
+    Any any;
+    Buffer::Ptr buffer = std::make_shared<BufferLikeString>(std::string(msg, len));
+    any.set(std::move(buffer));
+    return src->broadcastMessage(any);
+}
+
 API_EXPORT int API_CALL mk_media_source_close(const mk_media_source ctx,int force){
     assert(ctx);
     MediaSource *src = (MediaSource *)ctx;
@@ -448,6 +458,13 @@ API_EXPORT void API_CALL mk_publish_auth_invoker_do(const mk_publish_auth_invoke
     ProtocolOption option;
     option.enable_hls = enable_hls;
     option.enable_mp4 = enable_mp4;
+    (*invoker)(err_msg ? err_msg : "", option);
+}
+
+API_EXPORT void API_CALL mk_publish_auth_invoker_do2(const mk_publish_auth_invoker ctx, const char *err_msg, mk_ini ini) {
+    assert(ctx);
+    Broadcast::PublishAuthInvoker *invoker = (Broadcast::PublishAuthInvoker *)ctx;
+    ProtocolOption option(ini ? *((mINI *)ini) : mINI{} );
     (*invoker)(err_msg ? err_msg : "", option);
 }
 

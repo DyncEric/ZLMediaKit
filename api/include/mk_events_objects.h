@@ -13,6 +13,7 @@
 #include "mk_common.h"
 #include "mk_tcp.h"
 #include "mk_track.h"
+#include "mk_util.h"
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -100,6 +101,9 @@ API_EXPORT int API_CALL mk_media_source_get_total_reader_count(const mk_media_so
 API_EXPORT int API_CALL mk_media_source_get_track_count(const mk_media_source ctx);
 // copy track reference by index from MediaSource, please use mk_track_unref to release it
 API_EXPORT mk_track API_CALL mk_media_source_get_track(const mk_media_source ctx, int index);
+// MediaSource::broadcastMessage
+API_EXPORT int API_CALL mk_media_source_broadcast_msg(const mk_media_source ctx, const char *msg, size_t len);
+
 /**
  * 直播源在ZLMediaKit中被称作为MediaSource，
  * 目前支持3种，分别是RtmpMediaSource、RtspMediaSource、HlsMediaSource
@@ -313,6 +317,8 @@ API_EXPORT void API_CALL mk_publish_auth_invoker_do(const mk_publish_auth_invoke
                                                     const char *err_msg,
                                                     int enable_hls,
                                                     int enable_mp4);
+
+API_EXPORT void API_CALL mk_publish_auth_invoker_do2(const mk_publish_auth_invoker ctx, const char *err_msg, mk_ini option);
 
 /**
  * 克隆mk_publish_auth_invoker对象，通过克隆对象为堆对象，可以实现跨线程异步执行mk_publish_auth_invoker_do

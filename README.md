@@ -184,6 +184,7 @@ bash build_docker_images.sh
    - [BXC_gb28181Player](https://github.com/any12345com/BXC_gb28181Player) C++开发的支持国标GB28181协议的视频流播放器
 
 - WEB管理网站
+   - [zlm_webassist](https://github.com/1002victor/zlm_webassist) 本项目配套的前后端分离web管理项目
    - [AKStreamNVR](https://github.com/langmansh/AKStreamNVR) 前后端分离web项目,支持webrtc播放
    
  - SDK
@@ -327,6 +328,16 @@ bash build_docker_images.sh
 [tbago](https://github.com/tbago)
 [Luosh](https://github.com/Luosh)
 [linxiaoyan87](https://github.com/linxiaoyan)
+[waken](https://github.com/mc373906408)
+[Deepslient](https://github.com/Deepslient)
+[imp_rayjay](https://github.com/rayjay214)
+[ArmstrongCN](https://github.com/ArmstrongCN)
+[leibnewton](https://github.com/leibnewton)
+[1002victor](https://github.com/1002victor)
+
+同时感谢JetBrains对开源项目的支持，本项目使用CLion开发与调试：
+
+[![JetBrains](https://resources.jetbrains.com/storage/products/company/brand/logos/CLion.svg)](https://jb.gg/OpenSourceSupport)
 
 ## 使用案例
 
